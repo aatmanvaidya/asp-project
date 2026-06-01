@@ -1,7 +1,7 @@
 [project]
 name = "asp-project"
 version = "0.1.0"
-description = "Add your description here"
+description = "Audio emotion recognition"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
