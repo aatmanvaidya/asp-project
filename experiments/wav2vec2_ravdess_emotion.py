@@ -1,5 +1,10 @@
-import argparse
 import os
+
+# Force soundfile as the audio backend BEFORE importing datasets.
+# The HPC cluster does not have FFmpeg, so torchcodec cannot be used.
+os.environ["DATASETS_AUDIO_BACKEND"] = "soundfile"
+
+import argparse
 import sys
 import warnings
 
@@ -15,7 +20,9 @@ import seaborn as sns
 import torch
 
 import datasets.config
+
 datasets.config.TORCHCODEC_AVAILABLE = False
+datasets.config.SOUNDFILE_AVAILABLE = True  # ensure soundfile path is active
 
 from datasets import Audio, load_dataset
 from sklearn.metrics import (
@@ -89,19 +96,25 @@ def load_and_explore(dataset_name):
     print(raw_dataset)
 
     base_split = list(raw_dataset.keys())[0]
-    example = raw_dataset[base_split][0]
+
+    # Access column names via the features schema — avoids triggering audio
+    # decoding (which would require FFmpeg/torchcodec) at exploration time.
+    features = raw_dataset[base_split].features
+    example_keys = list(features.keys())
 
     print("Available splits :", list(raw_dataset.keys()))
-    print("Columns          :", list(example.keys()))
+    print("Columns          :", example_keys)
 
     label_col = next(
-        (c for c in ["label", "emotion", "labels", "target"] if c in example),
+        (c for c in ["label", "emotion", "labels", "target"] if c in features),
         None,
     )
     assert label_col is not None, "Could not detect label column."
     print(f'Label column     : "{label_col}"')
 
-    all_labels = raw_dataset[base_split][label_col]
+    # Read only the label column from the Arrow table — no audio decode needed.
+    all_labels = raw_dataset[base_split].with_format("numpy")[label_col]
+
     unique, counts = np.unique(all_labels, return_counts=True)
     print(f"Unique labels : {unique}")
     print(f"Total samples : {len(all_labels):,}")
@@ -172,6 +185,8 @@ def preprocess_splits(
     feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(model_name)
     print("Feature extractor sampling rate:", feature_extractor.sampling_rate)
 
+    # Cast to Audio with the target sampling rate; soundfile will handle decoding
+    # since DATASETS_AUDIO_BACKEND=soundfile was set at process start.
     train_raw = train_raw.cast_column("audio", Audio(sampling_rate=SAMPLING_RATE))
     val_raw = val_raw.cast_column("audio", Audio(sampling_rate=SAMPLING_RATE))
     test_raw = test_raw.cast_column("audio", Audio(sampling_rate=SAMPLING_RATE))
