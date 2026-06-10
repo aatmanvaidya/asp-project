@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=wav2vec2_ravdess_emotion
-#SBATCH --partition=gpu_a100_il
+#SBATCH --partition=gpu_a100_short
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
-#SBATCH --time=04:00:00
+#SBATCH --time=0:29:55
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --mail-type=END,FAIL
