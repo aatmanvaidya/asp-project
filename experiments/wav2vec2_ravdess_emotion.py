@@ -1,13 +1,20 @@
 import argparse
 import os
+import sys
 import warnings
 
-import datasets.config
+# Block torchcodec before any datasets import: the C extension requires FFmpeg
+# shared libraries that are not available on this HPC cluster. Setting the
+# module to None causes any internal `import torchcodec` to raise ImportError,
+# which datasets handles gracefully by falling back to soundfile.
+sys.modules["torchcodec"] = None  # type: ignore[assignment]
+
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 import torch
 
+import datasets.config
 datasets.config.TORCHCODEC_AVAILABLE = False
 
 from datasets import Audio, load_dataset
