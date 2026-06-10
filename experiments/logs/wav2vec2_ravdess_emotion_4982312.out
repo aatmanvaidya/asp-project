@@ -1,9 +1,9 @@
 ============================================
 Wav2Vec2 RAVDESS Emotion Classification
 ============================================
-Job ID    : 4982280
+Job ID    : 4982312
 Node      : uc2n561
-Start time: Wed Jun 10 03:20:49 AM CEST 2026
+Start time: Wed Jun 10 03:40:49 AM CEST 2026
 
 Loading modules...
 CUDA Home : /opt/bwhpc/common/devel/cuda/12.8
@@ -15,7 +15,6 @@ Python isolation enforced:
   VIRTUAL_ENV=/home/tu/tu_tu/tu_zxord71/asp-project/.venv
   Python used: /home/tu/tu_tu/tu_zxord71/asp-project/.venv/bin/python
 
-HF_HOME   : /home/tu/tu_tu/tu_zxord71/asp-project/.hf_cache
 
 GPU info:
 NVIDIA A100-PCIE-40GB, 40960 MiB, 40415 MiB
@@ -24,27 +23,42 @@ NVIDIA A100-PCIE-40GB, 40960 MiB, 40415 MiB
 Starting wav2vec2_ravdess_emotion.py ...
 ==========================================
 
+Device    : cuda
+Model     : facebook/wav2vec2-base
+Dataset   : xbgoose/ravdess
+Epochs    : 10
+Batch size: 8
+LR        : 3e-05
+Max length: 80,000 samples (5.0s @ 16000 Hz)
+
+[1/7] Loading dataset ...
+DatasetDict({
+    train: Dataset({
+        features: ['audio', 'modality', 'vocal_channel', 'emotion', 'emotional_intensity', 'statement', 'repetition', 'actor', 'gender'],
+        num_rows: 1440
+    })
+})
 
 ==========================================
 Job completed
 ==========================================
 Exit code : 1
-End time  : Wed Jun 10 03:22:18 AM CEST 2026
+End time  : Wed Jun 10 03:42:05 AM CEST 2026
 
 Failure: job exited with code 1
-Check logs: logs/wav2vec2_ravdess_emotion_4982280.err
+Check logs: logs/wav2vec2_ravdess_emotion_4982312.err
 
 ============================= JOB FEEDBACK =============================
 
 NodeName=uc2n561
-Job ID: 4982280
+Job ID: 4982312
 Cluster: uc3
 User/Group: tu_zxord71/tu_tu
 State: FAILED (exit code 1)
 Nodes: 1
 Cores per node: 8
-CPU Utilized: 00:00:13
-CPU Efficiency: 1.62% of 00:13:20 core-walltime
-Job Wall-clock time: 00:01:40
-Memory Utilized: 552.30 MB
-Memory Efficiency: 0.59% of 91.80 GB (91.80 GB/node)
+CPU Utilized: 00:00:11
+CPU Efficiency: 1.58% of 00:11:36 core-walltime
+Job Wall-clock time: 00:01:27
+Memory Utilized: 649.28 MB
+Memory Efficiency: 0.69% of 91.80 GB (91.80 GB/node)
