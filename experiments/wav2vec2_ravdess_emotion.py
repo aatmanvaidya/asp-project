@@ -127,10 +127,21 @@ def load_and_explore(dataset_name):
 def build_label_maps(raw_dataset, base_split, label_col, all_labels):
     print("\n[2/7] Building label maps ...")
     features = raw_dataset[base_split].features
+
+    # Detect whether labels are strings or integers
+    labels_are_strings = isinstance(all_labels[0], (str, np.str_))
+
     if hasattr(features.get(label_col), "names"):
+        # datasets ClassLabel: already has a canonical name list
         label_names = features[label_col].names
         print("Using dataset ClassLabel names:", label_names)
+    elif labels_are_strings:
+        # String labels (e.g. 'angry', 'calm', ...): sort alphabetically for
+        # a stable, reproducible mapping, then build id↔label dicts.
+        label_names = sorted(set(str(l) for l in all_labels))
+        print("Detected string labels. Sorted label names:", label_names)
     else:
+        # Integer labels: use the pre-defined RAVDESS name list
         min_label = int(min(all_labels))
         n_labels = int(max(all_labels)) - min_label + 1
         label_names = RAVDESS_NAMES[:n_labels]
