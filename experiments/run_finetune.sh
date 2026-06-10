@@ -47,11 +47,6 @@ echo "  VIRTUAL_ENV=$VIRTUAL_ENV"
 echo "  Python used: $(which python)"
 echo ""
 
-# HuggingFace cache — point to scratch to avoid quota issues on home
-export HF_HOME="$PROJECT_ROOT/.hf_cache"
-mkdir -p "$HF_HOME"
-echo "HF_HOME   : $HF_HOME"
-
 if [ -f "$PROJECT_ROOT/.env" ]; then
     echo "Sourcing $PROJECT_ROOT/.env"
     set -a
