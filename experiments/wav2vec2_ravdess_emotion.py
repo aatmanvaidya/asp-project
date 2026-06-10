@@ -242,21 +242,19 @@ def preprocess_splits(
     _min_label = 0 if labels_are_strings else int(min(all_labels))
 
     def preprocess(batch):
-        # Manually truncate/pad each array to exactly max_length samples so
-        # the batch is guaranteed to be homogeneous before the feature extractor
-        # tries to stack it. This avoids the inhomogeneous-shape tensor error
-        # that occurs when clips of varying length reach the extractor.
         raw_arrays = []
         for x in batch["audio"]:
             arr = np.array(x["array"], dtype=np.float32)
+            if arr.ndim > 1:
+                arr = arr.mean(axis=-1)  # stereo → mono
             if len(arr) >= max_length:
                 arr = arr[:max_length]
             else:
                 arr = np.pad(arr, (0, max_length - len(arr)))
             raw_arrays.append(arr)
 
-        # return_tensors=None → plain Python lists; set_format("torch") later
-        # handles the tensor conversion after the Arrow dataset is built.
+        # All arrays are already max_length; return_tensors="np" works because
+        # shapes are guaranteed uniform after the manual truncation/padding above.
         inputs = feature_extractor(
             raw_arrays,
             sampling_rate=SAMPLING_RATE,
@@ -264,7 +262,7 @@ def preprocess_splits(
             truncation=True,
             padding="max_length",
             return_attention_mask=True,
-            return_tensors=None,
+            return_tensors="np",
         )
         if labels_are_strings:
             inputs["labels"] = [label2id[str(l)] for l in batch[label_col]]
