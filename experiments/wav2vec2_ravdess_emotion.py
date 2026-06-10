@@ -1,30 +1,66 @@
 import os
+import sys
 
-# Force soundfile as the audio backend BEFORE importing datasets.
-# The HPC cluster does not have FFmpeg, so torchcodec cannot be used.
+# ── FFmpeg / torchcodec workaround ────────────────────────────────────────────
+# This HPC cluster has no FFmpeg, so torchcodec cannot be used. We must force
+# the soundfile backend at every layer before anything else is imported.
+
+# 1. Environment variable picked up by datasets at import time and by any
+#    subprocess / worker that inherits the environment.
 os.environ["DATASETS_AUDIO_BACKEND"] = "soundfile"
 
-import argparse
-import sys
-import warnings
-
-# Block torchcodec before any datasets import: the C extension requires FFmpeg
-# shared libraries that are not available on this HPC cluster. Setting the
-# module to None causes any internal `import torchcodec` to raise ImportError,
-# which datasets handles gracefully by falling back to soundfile.
+# 2. Stub out torchcodec so that `import torchcodec` raises ImportError
+#    everywhere (parent process and forked workers).
 sys.modules["torchcodec"] = None  # type: ignore[assignment]
+
+import argparse
+import warnings
 
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 import torch
 
+# 3. Patch datasets config flags before the datasets package finishes loading.
 import datasets.config
-
 datasets.config.TORCHCODEC_AVAILABLE = False
-datasets.config.SOUNDFILE_AVAILABLE = True  # ensure soundfile path is active
+datasets.config.SOUNDFILE_AVAILABLE = True
 
 from datasets import Audio, load_dataset
+
+# 4. Monkey-patch Audio.decode_example so that even inside .map() worker
+#    processes (which re-import datasets fresh) the torchcodec path is never
+#    reached. We replace the method with one that always uses soundfile/librosa.
+import soundfile as _sf
+import numpy as _np
+
+def _decode_example_soundfile(self, value, token_per_repo_id=None):
+    """Decode audio using soundfile, bypassing torchcodec entirely."""
+    if value is None:
+        return value
+    # value is already decoded (dict with 'array' and 'sampling_rate')
+    if isinstance(value, dict) and "array" in value:
+        return value
+    # value is a raw bytes / path dict from the Arrow table
+    path = value.get("path") or ""
+    bytes_ = value.get("bytes")
+    if bytes_:
+        import io
+        array, sampling_rate = _sf.read(io.BytesIO(bytes_), dtype="float32", always_2d=False)
+    elif path:
+        array, sampling_rate = _sf.read(path, dtype="float32", always_2d=False)
+    else:
+        return value
+    # Resample if needed
+    target_sr = self.sampling_rate
+    if target_sr is not None and sampling_rate != target_sr:
+        import librosa
+        array = librosa.resample(array, orig_sr=sampling_rate, target_sr=target_sr)
+        sampling_rate = target_sr
+    return {"path": path, "array": array.astype(_np.float32), "sampling_rate": sampling_rate}
+
+Audio.decode_example = _decode_example_soundfile
+# ─────────────────────────────────────────────────────────────────────────────
 from sklearn.metrics import (
     classification_report,
     confusion_matrix,
@@ -190,7 +226,7 @@ def split_dataset(raw_dataset, base_split, label_col, all_labels, seed):
 
 
 def preprocess_splits(
-    train_raw, val_raw, test_raw, label_col, all_labels, model_name, max_length
+    train_raw, val_raw, test_raw, label_col, all_labels, label2id, model_name, max_length
 ):
     print("\n[4/7] Extracting features ...")
     feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(model_name)
@@ -202,37 +238,59 @@ def preprocess_splits(
     val_raw = val_raw.cast_column("audio", Audio(sampling_rate=SAMPLING_RATE))
     test_raw = test_raw.cast_column("audio", Audio(sampling_rate=SAMPLING_RATE))
 
-    _min_label = int(min(all_labels))
+    labels_are_strings = isinstance(all_labels[0], (str, np.str_))
+    _min_label = 0 if labels_are_strings else int(min(all_labels))
 
     def preprocess(batch):
-        audio_arrays = [x["array"] for x in batch["audio"]]
+        # Manually truncate/pad each array to exactly max_length samples so
+        # the batch is guaranteed to be homogeneous before the feature extractor
+        # tries to stack it. This avoids the inhomogeneous-shape tensor error
+        # that occurs when clips of varying length reach the extractor.
+        raw_arrays = []
+        for x in batch["audio"]:
+            arr = np.array(x["array"], dtype=np.float32)
+            if len(arr) >= max_length:
+                arr = arr[:max_length]
+            else:
+                arr = np.pad(arr, (0, max_length - len(arr)))
+            raw_arrays.append(arr)
+
+        # return_tensors=None → plain Python lists; set_format("torch") later
+        # handles the tensor conversion after the Arrow dataset is built.
         inputs = feature_extractor(
-            audio_arrays,
+            raw_arrays,
             sampling_rate=SAMPLING_RATE,
             max_length=max_length,
             truncation=True,
             padding="max_length",
             return_attention_mask=True,
+            return_tensors=None,
         )
-        inputs["labels"] = [int(l) - _min_label for l in batch[label_col]]
+        if labels_are_strings:
+            inputs["labels"] = [label2id[str(l)] for l in batch[label_col]]
+        else:
+            inputs["labels"] = [int(l) - _min_label for l in batch[label_col]]
         return inputs
 
     cols_to_remove = train_raw.column_names
     train_ds = train_raw.map(
         preprocess,
         batched=True,
+        num_proc=1,
         remove_columns=cols_to_remove,
         desc="Preprocessing train",
     )
     val_ds = val_raw.map(
         preprocess,
         batched=True,
+        num_proc=1,
         remove_columns=cols_to_remove,
         desc="Preprocessing val  ",
     )
     test_ds = test_raw.map(
         preprocess,
         batched=True,
+        num_proc=1,
         remove_columns=cols_to_remove,
         desc="Preprocessing test ",
     )
@@ -438,7 +496,7 @@ def main():
         raw_dataset, base_split, label_col, all_labels, args.seed
     )
     train_ds, val_ds, test_ds = preprocess_splits(
-        train_raw, val_raw, test_raw, label_col, all_labels, args.model_name, max_length
+        train_raw, val_raw, test_raw, label_col, all_labels, label2id, args.model_name, max_length
     )
     model = load_model(args.model_name, num_labels, id2label, label2id)
     trainer = train(model, train_ds, val_ds, args)

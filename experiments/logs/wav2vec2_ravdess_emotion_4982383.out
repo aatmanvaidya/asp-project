@@ -1,9 +1,9 @@
 ============================================
 Wav2Vec2 RAVDESS Emotion Classification
 ============================================
-Job ID    : 4982312
+Job ID    : 4982383
 Node      : uc2n561
-Start time: Wed Jun 10 03:40:49 AM CEST 2026
+Start time: Wed Jun 10 04:06:49 AM CEST 2026
 
 Loading modules...
 CUDA Home : /opt/bwhpc/common/devel/cuda/12.8
@@ -38,27 +38,53 @@ DatasetDict({
         num_rows: 1440
     })
 })
+Available splits : ['train']
+Columns          : ['audio', 'modality', 'vocal_channel', 'emotion', 'emotional_intensity', 'statement', 'repetition', 'actor', 'gender']
+Label column     : "emotion"
+Unique labels : ['angry' 'calm' 'disgust' 'fearful' 'happy' 'neutral' 'sad' 'surprised']
+Total samples : 1,440
+         angry -> 192 samples
+          calm -> 192 samples
+       disgust -> 192 samples
+       fearful -> 192 samples
+         happy -> 192 samples
+       neutral -> 96 samples
+           sad -> 192 samples
+     surprised -> 192 samples
+
+[2/7] Building label maps ...
+Detected string labels. Sorted label names: ['angry', 'calm', 'disgust', 'fearful', 'happy', 'neutral', 'sad', 'surprised']
+id2label   : {0: 'angry', 1: 'calm', 2: 'disgust', 3: 'fearful', 4: 'happy', 5: 'neutral', 6: 'sad', 7: 'surprised'}
+Num classes: 8
+
+[3/7] Splitting dataset (70/15/15) ...
+Train : 1,008 samples  (70.0%)
+Val   :   216 samples  (15.0%)
+Test  :   216 samples  (15.0%)
+
+[4/7] Extracting features ...
+Feature extractor sampling rate: 16000
 
 ==========================================
 Job completed
 ==========================================
 Exit code : 1
-End time  : Wed Jun 10 03:42:05 AM CEST 2026
+End time  : Wed Jun 10 04:07:49 AM CEST 2026
 
 Failure: job exited with code 1
-Check logs: logs/wav2vec2_ravdess_emotion_4982312.err
+Check logs: logs/wav2vec2_ravdess_emotion_4982383.err
 
 ============================= JOB FEEDBACK =============================
 
 NodeName=uc2n561
-Job ID: 4982312
+Job ID: 4982383
 Cluster: uc3
 User/Group: tu_zxord71/tu_tu
 State: FAILED (exit code 1)
 Nodes: 1
 Cores per node: 8
-CPU Utilized: 00:00:11
-CPU Efficiency: 1.58% of 00:11:36 core-walltime
-Job Wall-clock time: 00:01:27
-Memory Utilized: 649.28 MB
-Memory Efficiency: 0.69% of 91.80 GB (91.80 GB/node)
+CPU Utilized: 00:00:44
+CPU Efficiency: 7.75% of 00:09:28 core-walltime
+Job Wall-clock time: 00:01:11
+Memory Utilized: 1.90 GB
+Memory Efficiency: 2.07% of 91.80 GB (91.80 GB/node)
