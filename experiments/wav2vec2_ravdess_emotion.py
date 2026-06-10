@@ -242,33 +242,47 @@ def preprocess_splits(
     _min_label = 0 if labels_are_strings else int(min(all_labels))
 
     def preprocess(batch):
-        raw_arrays = []
+        # Process each sample individually to avoid the feature extractor's
+        # internal batched tensor-stacking logic, which fails on some
+        # transformers versions even with return_tensors=None.
+        all_input_values = []
+        all_attention_masks = []
+
         for x in batch["audio"]:
             arr = np.array(x["array"], dtype=np.float32)
-            if arr.ndim > 1:
-                arr = arr.mean(axis=-1)  # stereo → mono
+            # Truncate or zero-pad to exactly max_length
             if len(arr) >= max_length:
                 arr = arr[:max_length]
             else:
                 arr = np.pad(arr, (0, max_length - len(arr)))
-            raw_arrays.append(arr)
 
-        # All arrays are already max_length; return_tensors="np" works because
-        # shapes are guaranteed uniform after the manual truncation/padding above.
-        inputs = feature_extractor(
-            raw_arrays,
-            sampling_rate=SAMPLING_RATE,
-            max_length=max_length,
-            truncation=True,
-            padding="max_length",
-            return_attention_mask=True,
-            return_tensors="np",
-        )
+            # Single-sample call always produces a homogeneous result
+            out = feature_extractor(
+                arr,
+                sampling_rate=SAMPLING_RATE,
+                return_attention_mask=True,
+                return_tensors=None,
+            )
+            # Unwrap any extra nesting added by the feature extractor for
+            # single-sample calls, e.g. [[...]] -> [...], so each row in the
+            # Arrow table is a flat 1-D sequence of length max_length.
+            # Without this, set_format("torch") produces [1, 80000] tensors
+            # which conv1d rejects (it expects [batch, 1, 80000]).
+            iv = np.array(out["input_values"], dtype=np.float32).squeeze()
+            am = np.array(out["attention_mask"], dtype=np.int64).squeeze()
+            all_input_values.append(iv.tolist())
+            all_attention_masks.append(am.tolist())
+
         if labels_are_strings:
-            inputs["labels"] = [label2id[str(l)] for l in batch[label_col]]
+            labels = [label2id[str(l)] for l in batch[label_col]]
         else:
-            inputs["labels"] = [int(l) - _min_label for l in batch[label_col]]
-        return inputs
+            labels = [int(l) - _min_label for l in batch[label_col]]
+
+        return {
+            "input_values": all_input_values,
+            "attention_mask": all_attention_masks,
+            "labels": labels,
+        }
 
     cols_to_remove = train_raw.column_names
     train_ds = train_raw.map(

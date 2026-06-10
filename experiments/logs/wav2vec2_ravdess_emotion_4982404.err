@@ -1,0 +1,44 @@
+Preprocessing train (num_proc=1):   0%|          | 0/1008 [00:00<?, ? examples/s]Preprocessing train (num_proc=1):  99%|█████████▉| 1000/1008 [01:00<00:00, 16.52 examples/s]Preprocessing train (num_proc=1): 100%|██████████| 1008/1008 [01:00<00:00, 16.60 examples/s]
+Preprocessing val   (num_proc=1):   0%|          | 0/216 [00:00<?, ? examples/s]Preprocessing val   (num_proc=1): 100%|██████████| 216/216 [00:12<00:00, 17.42 examples/s]Preprocessing val   (num_proc=1): 100%|██████████| 216/216 [00:12<00:00, 17.25 examples/s]
+Preprocessing test  (num_proc=1):   0%|          | 0/216 [00:00<?, ? examples/s]Preprocessing test  (num_proc=1): 100%|██████████| 216/216 [00:12<00:00, 16.72 examples/s]Preprocessing test  (num_proc=1): 100%|██████████| 216/216 [00:13<00:00, 16.52 examples/s]
+Loading weights:   0%|          | 0/211 [00:00<?, ?it/s]Loading weights: 100%|██████████| 211/211 [00:00<00:00, 27657.92it/s]
+[transformers] [1mWav2Vec2ForSequenceClassification LOAD REPORT[0m from: facebook/wav2vec2-base
+Key                          | Status     | 
+-----------------------------+------------+-
+quantizer.codevectors        | UNEXPECTED | 
+quantizer.weight_proj.weight | UNEXPECTED | 
+project_hid.weight           | UNEXPECTED | 
+quantizer.weight_proj.bias   | UNEXPECTED | 
+project_q.weight             | UNEXPECTED | 
+project_hid.bias             | UNEXPECTED | 
+project_q.bias               | UNEXPECTED | 
+classifier.bias              | MISSING    | 
+projector.bias               | MISSING    | 
+classifier.weight            | MISSING    | 
+projector.weight             | MISSING    | 
+
+Notes:
+- UNEXPECTED:	can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+- MISSING:	those params were newly initialized because missing from the checkpoint. Consider training on your downstream task.
+[transformers] warmup_ratio is deprecated and will be removed in v5.2. Use `warmup_steps` instead.
+Traceback (most recent call last):
+  File "/home/tu/tu_tu/tu_zxord71/asp-project/experiments/wav2vec2_ravdess_emotion.py", line 505, in <module>
+    main()
+  File "/home/tu/tu_tu/tu_zxord71/asp-project/experiments/wav2vec2_ravdess_emotion.py", line 500, in main
+    trainer = train(model, train_ds, val_ds, args)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tu/tu_tu/tu_zxord71/asp-project/experiments/wav2vec2_ravdess_emotion.py", line 334, in train
+    training_args = TrainingArguments(
+                    ^^^^^^^^^^^^^^^^^^
+  File "<string>", line 115, in __init__
+  File "/home/tu/tu_tu/tu_zxord71/asp-project/.venv/lib64/python3.11/site-packages/transformers/training_args.py", line 1599, in __post_init__
+    self.device
+  File "/home/tu/tu_tu/tu_zxord71/asp-project/.venv/lib64/python3.11/site-packages/transformers/training_args.py", line 1890, in device
+    return self._setup_devices
+           ^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib64/python3.11/functools.py", line 1001, in __get__
+    val = self.func(instance)
+          ^^^^^^^^^^^^^^^^^^^
+  File "/home/tu/tu_tu/tu_zxord71/asp-project/.venv/lib64/python3.11/site-packages/transformers/training_args.py", line 1778, in _setup_devices
+    raise ImportError(
+ImportError: Using the `Trainer` with `PyTorch` requires `accelerate>=1.1.0`: Please run `pip install transformers[torch]` or `pip install 'accelerate>=1.1.0'`

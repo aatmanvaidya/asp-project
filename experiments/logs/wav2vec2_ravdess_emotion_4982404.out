@@ -1,0 +1,99 @@
+============================================
+Wav2Vec2 RAVDESS Emotion Classification
+============================================
+Job ID    : 4982404
+Node      : uc2n561
+Start time: Wed Jun 10 04:17:35 AM CEST 2026
+
+Loading modules...
+CUDA Home : /opt/bwhpc/common/devel/cuda/12.8
+Python    : /opt/bwhpc/common/devel/python/3.13.3_llvm_19.1/bin/python
+
+Setting up project environment...
+Python isolation enforced:
+  PYTHONNOUSERSITE=1
+  VIRTUAL_ENV=/home/tu/tu_tu/tu_zxord71/asp-project/.venv
+  Python used: /home/tu/tu_tu/tu_zxord71/asp-project/.venv/bin/python
+
+
+GPU info:
+NVIDIA A100-PCIE-40GB, 40960 MiB, 40415 MiB
+
+==========================================
+Starting wav2vec2_ravdess_emotion.py ...
+==========================================
+
+Device    : cuda
+Model     : facebook/wav2vec2-base
+Dataset   : xbgoose/ravdess
+Epochs    : 10
+Batch size: 8
+LR        : 3e-05
+Max length: 80,000 samples (5.0s @ 16000 Hz)
+
+[1/7] Loading dataset ...
+DatasetDict({
+    train: Dataset({
+        features: ['audio', 'modality', 'vocal_channel', 'emotion', 'emotional_intensity', 'statement', 'repetition', 'actor', 'gender'],
+        num_rows: 1440
+    })
+})
+Available splits : ['train']
+Columns          : ['audio', 'modality', 'vocal_channel', 'emotion', 'emotional_intensity', 'statement', 'repetition', 'actor', 'gender']
+Label column     : "emotion"
+Unique labels : ['angry' 'calm' 'disgust' 'fearful' 'happy' 'neutral' 'sad' 'surprised']
+Total samples : 1,440
+         angry -> 192 samples
+          calm -> 192 samples
+       disgust -> 192 samples
+       fearful -> 192 samples
+         happy -> 192 samples
+       neutral -> 96 samples
+           sad -> 192 samples
+     surprised -> 192 samples
+
+[2/7] Building label maps ...
+Detected string labels. Sorted label names: ['angry', 'calm', 'disgust', 'fearful', 'happy', 'neutral', 'sad', 'surprised']
+id2label   : {0: 'angry', 1: 'calm', 2: 'disgust', 3: 'fearful', 4: 'happy', 5: 'neutral', 6: 'sad', 7: 'surprised'}
+Num classes: 8
+
+[3/7] Splitting dataset (70/15/15) ...
+Train : 1,008 samples  (70.0%)
+Val   :   216 samples  (15.0%)
+Test  :   216 samples  (15.0%)
+
+[4/7] Extracting features ...
+Feature extractor sampling rate: 16000
+Columns after preprocessing: ['input_values', 'attention_mask', 'labels']
+input_values shape (first sample): torch.Size([80000])
+Sample label: 3
+
+[5/7] Loading model ...
+Total parameters    : 94,570,632
+Trainable parameters: 94,570,632
+
+[6/7] Training ...
+
+==========================================
+Job completed
+==========================================
+Exit code : 1
+End time  : Wed Jun 10 04:21:08 AM CEST 2026
+
+Failure: job exited with code 1
+Check logs: logs/wav2vec2_ravdess_emotion_4982404.err
+
+============================= JOB FEEDBACK =============================
+
+NodeName=uc2n561
+Job ID: 4982404
+Cluster: uc3
+User/Group: tu_zxord71/tu_tu
+State: FAILED (exit code 1)
+Nodes: 1
+Cores per node: 8
+CPU Utilized: 00:01:13
+CPU Efficiency: 4.04% of 00:30:08 core-walltime
+Job Wall-clock time: 00:03:46
+Memory Utilized: 1.90 GB
+Memory Efficiency: 2.07% of 91.80 GB (91.80 GB/node)
