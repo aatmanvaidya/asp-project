@@ -13,7 +13,8 @@ os.environ["DATASETS_AUDIO_BACKEND"] = "soundfile"
 #    everywhere (parent process and forked workers).
 sys.modules["torchcodec"] = None  # type: ignore[assignment]
 
-import argparse
+import csv
+import json
 import warnings
 
 import matplotlib.pyplot as plt
@@ -78,24 +79,37 @@ warnings.filterwarnings("ignore")
 
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-MODEL_NAME = "facebook/wav2vec2-base"
+# Edit these constants directly — no CLI arguments needed.
+
+MODEL_NAME   = "facebook/wav2vec2-base"
 DATASET_NAME = "xbgoose/ravdess"
+OUTPUT_DIR   = "./wav2vec2-ravdess-output"
+SEED         = 42
 
+# Audio
 SAMPLING_RATE = 16_000
-MAX_DURATION = 5.0
-MAX_LENGTH = int(SAMPLING_RATE * MAX_DURATION)
+MAX_DURATION  = 5.0
+MAX_LENGTH    = int(SAMPLING_RATE * MAX_DURATION)
 
+# Dataset split
 TRAIN_RATIO = 0.70
-VAL_RATIO = 0.15
-TEST_RATIO = 0.15
+VAL_RATIO   = 0.15
+TEST_RATIO  = 0.15
 
-BATCH_SIZE = 8
-NUM_EPOCHS = 10
+# ── Default / fallback hyperparameters (used when HPO is disabled) ─────────
+BATCH_SIZE    = 8
+NUM_EPOCHS    = 50      # high ceiling — early stopping will decide when to stop
 LEARNING_RATE = 3e-5
-WEIGHT_DECAY = 0.01
-WARMUP_RATIO = 0.1
-OUTPUT_DIR = "./wav2vec2-ravdess-output"
-SEED = 42
+WEIGHT_DECAY  = 0.01
+WARMUP_RATIO  = 0.1
+
+# ── Early stopping ─────────────────────────────────────────────────────────
+EARLY_STOPPING_PATIENCE = 3   # stop after this many epochs without f1 improvement
+EARLY_STOPPING_THRESHOLD = 0.001  # minimum improvement to count as progress
+
+# ── Optuna HPO ─────────────────────────────────────────────────────────────
+HPO_TRIALS = 20   # set to 0 to skip HPO and use the defaults above
+HPO_EPOCHS = 3    # epochs per trial (short — just enough to rank configs)
 
 RAVDESS_NAMES = [
     "neutral",
@@ -107,23 +121,6 @@ RAVDESS_NAMES = [
     "disgust",
     "surprised",
 ]
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Fine-tune Wav2Vec2 for RAVDESS emotion classification"
-    )
-    parser.add_argument("--model_name", type=str, default=MODEL_NAME)
-    parser.add_argument("--dataset_name", type=str, default=DATASET_NAME)
-    parser.add_argument("--batch_size", type=int, default=BATCH_SIZE)
-    parser.add_argument("--num_epochs", type=int, default=NUM_EPOCHS)
-    parser.add_argument("--learning_rate", type=float, default=LEARNING_RATE)
-    parser.add_argument("--weight_decay", type=float, default=WEIGHT_DECAY)
-    parser.add_argument("--warmup_ratio", type=float, default=WARMUP_RATIO)
-    parser.add_argument("--output_dir", type=str, default=OUTPUT_DIR)
-    parser.add_argument("--seed", type=int, default=SEED)
-    parser.add_argument("--max_duration", type=float, default=MAX_DURATION)
-    return parser.parse_args()
 
 
 def load_and_explore(dataset_name):
@@ -314,7 +311,7 @@ def preprocess_splits(
     print("Columns after preprocessing:", train_ds.column_names)
     print("input_values shape (first sample):", train_ds[0]["input_values"].shape)
     print("Sample label:", train_ds[0]["labels"].item())
-    return train_ds, val_ds, test_ds
+    return train_ds, val_ds, test_ds, test_raw
 
 
 def load_model(model_name, num_labels, id2label, label2id):
@@ -343,26 +340,199 @@ def compute_metrics(eval_pred):
     }
 
 
-def train(model, train_ds, val_ds, args):
+# ── Optuna HPO ────────────────────────────────────────────────────────────────
+
+def run_hpo(
+    train_ds, val_ds,
+    model_name, num_labels, id2label, label2id,
+):
+    """
+    Run Optuna hyperparameter search via Trainer.hyperparameter_search().
+
+    Search space
+    ------------
+    - learning_rate : log-uniform  [1e-5, 5e-4]
+    - per_device_train_batch_size : categorical [4, 8, 16]
+    - warmup_ratio  : uniform      [0.0, 0.2]
+    - weight_decay  : uniform      [0.0, 0.1]
+
+    Each trial trains for `HPO_EPOCHS` epochs.  The objective is
+    eval_f1_macro (higher is better).
+    """
+    import optuna
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    hpo_dir = os.path.join(OUTPUT_DIR, "hpo_trials")
+    os.makedirs(hpo_dir, exist_ok=True)
+
+    def model_init(trial=None):
+        return Wav2Vec2ForSequenceClassification.from_pretrained(
+            model_name,
+            num_labels=num_labels,
+            id2label=id2label,
+            label2id=label2id,
+            ignore_mismatched_sizes=True,
+        )
+
+    def hp_space(trial):
+        return {
+            "learning_rate": trial.suggest_float("learning_rate", 1e-5, 5e-4, log=True),
+            "per_device_train_batch_size": trial.suggest_categorical(
+                "per_device_train_batch_size", [4, 8, 16]
+            ),
+            "warmup_ratio": trial.suggest_float("warmup_ratio", 0.0, 0.2),
+            "weight_decay": trial.suggest_float("weight_decay", 0.0, 0.1),
+        }
+
+    # Base TrainingArguments for all HPO trials
+    hpo_training_args = TrainingArguments(
+        output_dir=hpo_dir,
+        num_train_epochs=HPO_EPOCHS,
+        eval_strategy="epoch",
+        save_strategy="no",          # don't save checkpoints during search
+        load_best_model_at_end=False,
+        metric_for_best_model="f1_macro",
+        greater_is_better=True,
+        logging_steps=50,
+        fp16=torch.cuda.is_available(),
+        dataloader_num_workers=4,
+        report_to="none",
+        seed=SEED,
+    )
+
+    trainer = Trainer(
+        model_init=model_init,
+        args=hpo_training_args,
+        train_dataset=train_ds,
+        eval_dataset=val_ds,
+        compute_metrics=compute_metrics,
+    )
+
+    print(f"\nRunning Optuna HPO: {HPO_TRIALS} trials x {HPO_EPOCHS} epochs each ...")
+    best_run = trainer.hyperparameter_search(
+        direction="maximize",
+        backend="optuna",
+        hp_space=hp_space,
+        n_trials=HPO_TRIALS,
+        study_name="wav2vec2_ravdess_hpo",
+    )
+
+    print("\nBest trial:")
+    print(f"  Objective (f1_macro) : {best_run.objective:.4f}")
+    print(f"  Hyperparameters      : {best_run.hyperparameters}")
+
+    # ── Collect all trial results from the Optuna study and save to CSV ────
+    # Trainer.hyperparameter_search() creates an optuna Study internally.
+    # We retrieve it by name from the in-memory storage to get every trial.
+    import optuna
+    csv_path = os.path.join(OUTPUT_DIR, "hpo_trials.csv")
+    try:
+        study_obj = optuna.load_study(study_name="wav2vec2_ravdess_hpo", storage=None)
+        trials = study_obj.trials
+        param_keys = sorted({k for t in trials for k in t.params.keys()})
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.DictWriter(
+                f, fieldnames=["trial_number", "state", "f1_macro"] + param_keys
+            )
+            writer.writeheader()
+            for t in trials:
+                row = {
+                    "trial_number": t.number,
+                    "state": t.state.name,
+                    "f1_macro": t.value if t.value is not None else "",
+                }
+                for k in param_keys:
+                    row[k] = t.params.get(k, "")
+                writer.writerow(row)
+        print(f"Saved HPO trial history ({len(trials)} trials) -> {csv_path}")
+    except Exception as e:
+        # Fallback: write best trial only
+        param_keys = sorted(best_run.hyperparameters.keys())
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["trial", "f1_macro"] + param_keys)
+            writer.writeheader()
+            writer.writerow(
+                {"trial": best_run.run_id, "f1_macro": best_run.objective,
+                 **{k: best_run.hyperparameters[k] for k in param_keys}}
+            )
+        print(f"Saved HPO results (best trial only) -> {csv_path}  [{e}]")
+
+    # ── Save best hyperparameters to JSON ──────────────────────────────────
+    best_params = {
+        "learning_rate": best_run.hyperparameters.get("learning_rate", LEARNING_RATE),
+        "per_device_train_batch_size": best_run.hyperparameters.get(
+            "per_device_train_batch_size", BATCH_SIZE
+        ),
+        "warmup_ratio": best_run.hyperparameters.get("warmup_ratio", WARMUP_RATIO),
+        "weight_decay": best_run.hyperparameters.get("weight_decay", WEIGHT_DECAY),
+        "num_epochs": NUM_EPOCHS,
+        "hpo_objective_f1_macro": best_run.objective,
+        "hpo_trials": HPO_TRIALS,
+        "hpo_epochs_per_trial": HPO_EPOCHS,
+    }
+    json_path = os.path.join(OUTPUT_DIR, "best_hyperparameters.json")
+    with open(json_path, "w") as f:
+        json.dump(best_params, f, indent=2)
+    print(f"Saved best hyperparameters -> {json_path}")
+
+    return best_params
+
+
+def train(train_ds, val_ds, model_name, num_labels, id2label, label2id, best_params=None):
+    """
+    Full training run with early stopping.
+    If best_params is provided (from HPO) those values override the constants above.
+    Early stopping monitors eval_f1_macro and stops after EARLY_STOPPING_PATIENCE
+    epochs without improvement of at least EARLY_STOPPING_THRESHOLD.
+    """
+    from transformers import EarlyStoppingCallback
+
     print("\n[6/7] Training ...")
+
+    lr           = (best_params or {}).get("learning_rate",               LEARNING_RATE)
+    batch_size   = (best_params or {}).get("per_device_train_batch_size",  BATCH_SIZE)
+    warmup_ratio = (best_params or {}).get("warmup_ratio",                WARMUP_RATIO)
+    weight_decay = (best_params or {}).get("weight_decay",                WEIGHT_DECAY)
+
+    print(f"  learning_rate              : {lr}")
+    print(f"  per_device_train_batch_size: {batch_size}")
+    print(f"  warmup_ratio               : {warmup_ratio}")
+    print(f"  weight_decay               : {weight_decay}")
+    print(f"  num_epochs (max)           : {NUM_EPOCHS}")
+    print(f"  early_stopping_patience    : {EARLY_STOPPING_PATIENCE}")
+
+    model = Wav2Vec2ForSequenceClassification.from_pretrained(
+        model_name,
+        num_labels=num_labels,
+        id2label=id2label,
+        label2id=label2id,
+        ignore_mismatched_sizes=True,
+    )
+
     training_args = TrainingArguments(
-        output_dir=args.output_dir,
-        num_train_epochs=args.num_epochs,
-        per_device_train_batch_size=args.batch_size,
-        per_device_eval_batch_size=args.batch_size,
+        output_dir=OUTPUT_DIR,
+        num_train_epochs=NUM_EPOCHS,
+        per_device_train_batch_size=batch_size,
+        per_device_eval_batch_size=batch_size,
         eval_strategy="epoch",
         save_strategy="epoch",
         load_best_model_at_end=True,
+        save_total_limit=1,          # keep only the single best checkpoint
         metric_for_best_model="f1_macro",
         greater_is_better=True,
-        learning_rate=args.learning_rate,
-        warmup_ratio=args.warmup_ratio,
-        weight_decay=args.weight_decay,
+        learning_rate=lr,
+        warmup_ratio=warmup_ratio,
+        weight_decay=weight_decay,
         logging_steps=10,
         fp16=torch.cuda.is_available(),
         dataloader_num_workers=4,
         report_to="none",
-        seed=args.seed,
+        seed=SEED,
+    )
+
+    early_stopping = EarlyStoppingCallback(
+        early_stopping_patience=EARLY_STOPPING_PATIENCE,
+        early_stopping_threshold=EARLY_STOPPING_THRESHOLD,
     )
 
     trainer = Trainer(
@@ -371,16 +541,19 @@ def train(model, train_ds, val_ds, args):
         train_dataset=train_ds,
         eval_dataset=val_ds,
         compute_metrics=compute_metrics,
+        callbacks=[early_stopping],
     )
 
     train_result = trainer.train()
+    stopped_epoch = int(trainer.state.epoch)
     print("\nTraining complete.")
-    print(f"Runtime  : {train_result.metrics['train_runtime']:.1f}s")
-    print(f"Samples/s: {train_result.metrics['train_samples_per_second']:.2f}")
+    print(f"Stopped at epoch : {stopped_epoch} / {NUM_EPOCHS}")
+    print(f"Runtime          : {train_result.metrics['train_runtime']:.1f}s")
+    print(f"Samples/s        : {train_result.metrics['train_samples_per_second']:.2f}")
     return trainer
 
 
-def evaluate_test(trainer, test_ds, id2label, num_labels, output_dir):
+def evaluate_test(trainer, test_ds, test_raw, id2label, num_labels, output_dir):
     print("\n[7/7] Evaluating on test set ...")
     test_output = trainer.predict(test_ds)
     test_preds = np.argmax(test_output.predictions, axis=-1)
@@ -403,6 +576,32 @@ def evaluate_test(trainer, test_ds, id2label, num_labels, output_dir):
     print(f"F1-Macro    : {f1_macro:.4f}")
     print(f"F1-Weighted : {f1_weighted:.4f}")
     print(f"Accuracy    : {accuracy:.4f}")
+
+    # ── Per-sample predictions CSV ─────────────────────────────────────────
+    # Extract audio filenames from test_raw (before preprocessing removed the
+    # audio column). Falls back to a sequential index if path is unavailable.
+    audio_paths = []
+    for sample in test_raw:
+        path = ""
+        if "audio" in sample and isinstance(sample["audio"], dict):
+            path = sample["audio"].get("path") or ""
+        audio_paths.append(os.path.basename(path) if path else "")
+
+    predictions_csv = os.path.join(output_dir, "test_predictions.csv")
+    with open(predictions_csv, "w", newline="") as f:
+        writer = csv.DictWriter(
+            f, fieldnames=["index", "audio_file", "ground_truth", "predicted", "correct"]
+        )
+        writer.writeheader()
+        for i, (gt, pred) in enumerate(zip(test_labels, test_preds)):
+            writer.writerow({
+                "index":        i,
+                "audio_file":   audio_paths[i] if i < len(audio_paths) else "",
+                "ground_truth": id2label[int(gt)],
+                "predicted":    id2label[int(pred)],
+                "correct":      int(gt) == int(pred),
+            })
+    print(f"Saved -> {predictions_csv}")
 
     # Confusion matrix
     cm = confusion_matrix(test_labels, test_preds)
@@ -429,18 +628,41 @@ def evaluate_test(trainer, test_ds, id2label, num_labels, output_dir):
     plt.close()
     print(f"Saved -> {cm_path}")
 
-    # Training curves
+    # ── Training history ──────────────────────────────────────────────────────
     log_history = trainer.state.log_history
-    train_steps = [
-        e["step"] for e in log_history if "loss" in e and "eval_loss" not in e
-    ]
-    train_losses = [
-        e["loss"] for e in log_history if "loss" in e and "eval_loss" not in e
-    ]
-    eval_epochs = [e["epoch"] for e in log_history if "eval_loss" in e]
-    eval_losses = [e["eval_loss"] for e in log_history if "eval_loss" in e]
-    eval_f1 = [e.get("eval_f1_macro") for e in log_history if "eval_loss" in e]
 
+    train_steps  = [e["step"]  for e in log_history if "loss" in e and "eval_loss" not in e]
+    train_losses = [e["loss"]  for e in log_history if "loss" in e and "eval_loss" not in e]
+    eval_epochs  = [e["epoch"] for e in log_history if "eval_loss" in e]
+    eval_losses  = [e["eval_loss"] for e in log_history if "eval_loss" in e]
+    eval_f1      = [e.get("eval_f1_macro")      for e in log_history if "eval_loss" in e]
+    eval_f1w     = [e.get("eval_f1_weighted")   for e in log_history if "eval_loss" in e]
+    eval_acc     = [e.get("eval_accuracy")      for e in log_history if "eval_loss" in e]
+
+    # ── Save training history to CSV ──────────────────────────────────────
+    # Two CSVs: one for per-step train loss, one for per-epoch validation metrics.
+    train_csv_path = os.path.join(output_dir, "train_loss_history.csv")
+    with open(train_csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["step", "train_loss"])
+        writer.writeheader()
+        for step, loss in zip(train_steps, train_losses):
+            writer.writerow({"step": step, "train_loss": loss})
+    print(f"Saved -> {train_csv_path}")
+
+    val_csv_path = os.path.join(output_dir, "val_metrics_history.csv")
+    with open(val_csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(
+            f, fieldnames=["epoch", "val_loss", "f1_macro", "f1_weighted", "accuracy"]
+        )
+        writer.writeheader()
+        for ep, vl, f1, f1w, acc in zip(eval_epochs, eval_losses, eval_f1, eval_f1w, eval_acc):
+            writer.writerow({
+                "epoch": ep, "val_loss": vl,
+                "f1_macro": f1, "f1_weighted": f1w, "accuracy": acc,
+            })
+    print(f"Saved -> {val_csv_path}")
+
+    # ── Training curves plot ───────────────────────────────────────────────
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     axes[0].plot(
         train_steps, train_losses, color="steelblue", alpha=0.85, linewidth=1.2
@@ -484,35 +706,46 @@ def evaluate_test(trainer, test_ds, id2label, num_labels, output_dir):
 
 
 def main():
-    args = parse_args()
-
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Device    : {device}")
-    print(f"Model     : {args.model_name}")
-    print(f"Dataset   : {args.dataset_name}")
-    print(f"Epochs    : {args.num_epochs}")
-    print(f"Batch size: {args.batch_size}")
-    print(f"LR        : {args.learning_rate}")
-    max_length = int(SAMPLING_RATE * args.max_duration)
-    print(
-        f"Max length: {max_length:,} samples ({args.max_duration}s @ {SAMPLING_RATE} Hz)"
-    )
+    print(f"Device              : {device}")
+    print(f"Model               : {MODEL_NAME}")
+    print(f"Dataset             : {DATASET_NAME}")
+    print(f"Max epochs          : {NUM_EPOCHS}  (early stopping patience={EARLY_STOPPING_PATIENCE})")
+    print(f"Batch size          : {BATCH_SIZE}  (may be overridden by HPO)")
+    print(f"LR                  : {LEARNING_RATE}  (may be overridden by HPO)")
+    print(f"HPO trials          : {HPO_TRIALS}  (0 = disabled)")
+    print(f"Max length          : {MAX_LENGTH:,} samples ({MAX_DURATION}s @ {SAMPLING_RATE} Hz)")
 
-    os.makedirs(args.output_dir, exist_ok=True)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    raw_dataset, base_split, label_col, all_labels = load_and_explore(args.dataset_name)
+    raw_dataset, base_split, label_col, all_labels = load_and_explore(DATASET_NAME)
     label_names, id2label, label2id, num_labels = build_label_maps(
         raw_dataset, base_split, label_col, all_labels
     )
     train_raw, val_raw, test_raw = split_dataset(
-        raw_dataset, base_split, label_col, all_labels, args.seed
+        raw_dataset, base_split, label_col, all_labels, SEED
     )
-    train_ds, val_ds, test_ds = preprocess_splits(
-        train_raw, val_raw, test_raw, label_col, all_labels, label2id, args.model_name, max_length
+    train_ds, val_ds, test_ds, test_raw = preprocess_splits(
+        train_raw, val_raw, test_raw, label_col, all_labels, label2id, MODEL_NAME, MAX_LENGTH
     )
-    model = load_model(args.model_name, num_labels, id2label, label2id)
-    trainer = train(model, train_ds, val_ds, args)
-    evaluate_test(trainer, test_ds, id2label, num_labels, args.output_dir)
+
+    # ── Optional HPO phase ────────────────────────────────────────────────
+    best_params = None
+    if HPO_TRIALS > 0:
+        best_params = run_hpo(
+            train_ds, val_ds,
+            MODEL_NAME, num_labels, id2label, label2id,
+        )
+    else:
+        print("\nHPO disabled. Using fixed hyperparameters from config.")
+
+    # ── Final training run (with early stopping) ──────────────────────────
+    trainer = train(
+        train_ds, val_ds,
+        MODEL_NAME, num_labels, id2label, label2id,
+        best_params=best_params,
+    )
+    evaluate_test(trainer, test_ds, test_raw, id2label, num_labels, OUTPUT_DIR)
 
 
 if __name__ == "__main__":
