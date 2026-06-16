@@ -515,7 +515,7 @@ def train(train_ds, val_ds, model_name, num_labels, id2label, label2id, best_par
         per_device_train_batch_size=batch_size,
         per_device_eval_batch_size=batch_size,
         eval_strategy="epoch",
-        save_strategy="epoch",
+        save_strategy="best",
         load_best_model_at_end=True,
         save_total_limit=1,          # keep only the single best checkpoint
         metric_for_best_model="f1_macro",
