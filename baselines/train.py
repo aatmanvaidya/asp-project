@@ -6,6 +6,7 @@ or save features to a .npz and pass the path as a CLI argument:
     uv run python baselines/train.py path/to/features.npz
 """
 
+import csv
 import os
 import sys
 import numpy as np
@@ -14,7 +15,7 @@ import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import classification_report, confusion_matrix, f1_score
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -91,6 +92,8 @@ def run(
     criterion = nn.CrossEntropyLoss()
 
     print(f"Training {epochs} epochs...")
+    train_losses = []
+    val_losses, val_f1_macros, val_f1_weighteds, val_accuracies = [], [], [], []
     for epoch in range(1, epochs + 1):
         model.train()
         running_loss = 0.0
@@ -101,8 +104,29 @@ def run(
             loss.backward()
             optimizer.step()
             running_loss += loss.item() * len(xb)
+        epoch_loss = running_loss / len(X_train)
+        train_losses.append(epoch_loss)
+
+        model.eval()
+        val_running_loss = 0.0
+        epoch_preds, epoch_true = [], []
+        with torch.no_grad():
+            for xb, yb in test_loader:
+                xb, yb = xb.to(device), yb.to(device)
+                logits = model(xb)
+                val_running_loss += criterion(logits, yb).item() * len(xb)
+                epoch_preds.extend(logits.argmax(dim=1).cpu().numpy())
+                epoch_true.extend(yb.cpu().numpy())
+        val_loss = val_running_loss / len(X_test)
+        ep = np.array(epoch_preds)
+        et = np.array(epoch_true)
+        val_losses.append(val_loss)
+        val_f1_macros.append(f1_score(et, ep, average="macro", zero_division=0))
+        val_f1_weighteds.append(f1_score(et, ep, average="weighted", zero_division=0))
+        val_accuracies.append(float((ep == et).mean()))
+
         if epoch % 10 == 0:
-            print(f"  Epoch {epoch:3d}/{epochs}  loss: {running_loss / len(X_train):.4f}")
+            print(f"  Epoch {epoch:3d}/{epochs}  loss: {epoch_loss:.4f}  val_loss: {val_loss:.4f}  val_f1: {val_f1_macros[-1]:.4f}")
 
     model.eval()
     all_preds, all_true = [], []
@@ -115,13 +139,23 @@ def run(
     all_preds = np.array(all_preds)
     all_true = np.array(all_true)
 
-    report = classification_report(all_true, all_preds, target_names=label_names)
+    f1_macro = f1_score(all_true, all_preds, average="macro", zero_division=0)
+    f1_weighted = f1_score(all_true, all_preds, average="weighted", zero_division=0)
+    accuracy = float((all_preds == all_true).mean())
+
+    report = classification_report(all_true, all_preds, target_names=label_names, zero_division=0)
     print("\n=== Classification Report ===")
     print(report)
+    print(f"F1-Macro    : {f1_macro:.4f}")
+    print(f"F1-Weighted : {f1_weighted:.4f}")
+    print(f"Accuracy    : {accuracy:.4f}")
 
     report_path = os.path.join(RESULTS_DIR, "report.txt")
     with open(report_path, "w") as f:
         f.write(report)
+        f.write(f"\nF1-Macro    : {f1_macro:.4f}\n")
+        f.write(f"F1-Weighted : {f1_weighted:.4f}\n")
+        f.write(f"Accuracy    : {accuracy:.4f}\n")
     print(f"Saved: {report_path}")
 
     cm = confusion_matrix(all_true, all_preds)
@@ -132,12 +166,69 @@ def run(
     )
     ax.set_xlabel("Predicted")
     ax.set_ylabel("True")
-    ax.set_title("Confusion Matrix — MFCC 1D CNN Baseline")
+    ax.set_title(f"Confusion Matrix — MFCC 1D CNN Baseline  (F1-Macro={f1_macro:.3f})")
     plt.tight_layout()
     cm_path = os.path.join(RESULTS_DIR, "confusion_matrix.png")
     plt.savefig(cm_path, dpi=150)
     plt.close()
     print(f"Saved: {cm_path}")
+
+    preds_csv_path = os.path.join(RESULTS_DIR, "test_predictions.csv")
+    with open(preds_csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["index", "ground_truth", "predicted", "correct"])
+        writer.writeheader()
+        for i, (gt, pred) in enumerate(zip(all_true, all_preds)):
+            writer.writerow({
+                "index": i,
+                "ground_truth": label_names[int(gt)],
+                "predicted": label_names[int(pred)],
+                "correct": int(gt) == int(pred),
+            })
+    print(f"Saved: {preds_csv_path}")
+
+    loss_csv_path = os.path.join(RESULTS_DIR, "train_loss_history.csv")
+    with open(loss_csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["epoch", "train_loss"])
+        writer.writeheader()
+        for i, loss in enumerate(train_losses, 1):
+            writer.writerow({"epoch": i, "train_loss": loss})
+    print(f"Saved: {loss_csv_path}")
+
+    val_csv_path = os.path.join(RESULTS_DIR, "val_metrics_history.csv")
+    with open(val_csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["epoch", "val_loss", "f1_macro", "f1_weighted", "accuracy"])
+        writer.writeheader()
+        for i, (vl, f1m, f1w, acc) in enumerate(zip(val_losses, val_f1_macros, val_f1_weighteds, val_accuracies), 1):
+            writer.writerow({"epoch": i, "val_loss": vl, "f1_macro": f1m, "f1_weighted": f1w, "accuracy": acc})
+    print(f"Saved: {val_csv_path}")
+
+    epochs_range = range(1, epochs + 1)
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    axes[0].plot(epochs_range, train_losses, color="steelblue", linewidth=1.2)
+    axes[0].set_xlabel("Epoch")
+    axes[0].set_ylabel("Cross-Entropy Loss")
+    axes[0].set_title("Training Loss")
+    axes[0].grid(True, alpha=0.3)
+
+    ax_loss = axes[1]
+    ax_loss.plot(epochs_range, val_losses, color="coral", marker="o", markersize=3, label="Val Loss")
+    ax_loss.set_xlabel("Epoch")
+    ax_loss.set_ylabel("Loss", color="coral")
+    ax_loss.tick_params(axis="y", labelcolor="coral")
+    ax_loss.set_title("Validation Loss & F1-Macro per Epoch")
+    ax_f1 = ax_loss.twinx()
+    ax_f1.plot(epochs_range, val_f1_macros, color="seagreen", marker="s", markersize=3, linestyle="--", label="Val F1-Macro")
+    ax_f1.set_ylabel("F1-Macro", color="seagreen")
+    ax_f1.tick_params(axis="y", labelcolor="seagreen")
+    lines = ax_loss.get_lines() + ax_f1.get_lines()
+    ax_loss.legend(lines, [l.get_label() for l in lines], loc="upper right")
+    ax_loss.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    curves_path = os.path.join(RESULTS_DIR, "training_curves.png")
+    plt.savefig(curves_path, dpi=150)
+    plt.close()
+    print(f"Saved: {curves_path}")
 
     model_path = os.path.join(MODELS_DIR, "mfcc_cnn.pt")
     torch.save(model.state_dict(), model_path)
