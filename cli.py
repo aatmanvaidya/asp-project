@@ -45,9 +45,17 @@ def cmd_train_mfcc(args):
 
 
 def cmd_train_transformer(args):
-    raise NotImplementedError(
-        "Transformer fine-tuning is not yet implemented. "
-        "Add it under baselines/ and wire it up here."
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "experiments"))
+    import wav2vec2_ravdess_emotion as pipeline
+
+    pipeline.run(
+        dataset_name=args.dataset,
+        model_name=args.model_id,
+        output_dir=args.output_dir,
+        epochs=args.epochs,
+        lr=args.lr,
+        batch_size=args.batch_size,
+        hpo_trials=args.hpo_trials,
     )
 
 
@@ -85,11 +93,19 @@ def build_parser() -> argparse.ArgumentParser:
     mfcc_p.set_defaults(func=cmd_train_mfcc)
 
     # train transformer
-    tf_p = train_sub.add_parser("transformer", help="Fine-tune a transformer [not implemented]")
+    tf_p = train_sub.add_parser("transformer", help="Fine-tune a wav2vec2 transformer")
     _add_training_args(tf_p)
     tf_p.add_argument(
         "--model-id", dest="model_id", default="facebook/wav2vec2-base", metavar="HF_ID",
         help="HuggingFace model ID (default: facebook/wav2vec2-base)",
+    )
+    tf_p.add_argument(
+        "--output-dir", dest="output_dir", default="experiments/wav2vec2-ravdess-output",
+        metavar="DIR", help="Directory for checkpoints and outputs",
+    )
+    tf_p.add_argument(
+        "--hpo-trials", dest="hpo_trials", type=int, default=20, metavar="N",
+        help="Optuna HPO trials (default: 20, 0 to disable)",
     )
     tf_p.set_defaults(func=cmd_train_transformer)
 

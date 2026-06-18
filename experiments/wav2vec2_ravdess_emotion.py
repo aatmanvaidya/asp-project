@@ -142,6 +142,10 @@ RAVDESS_NAMES = [
     "surprised",
 ]
 
+DATASET_HF_MAP: dict[str, str] = {
+    "ravdess": "xbgoose/ravdess",
+}
+
 
 # ── Preprocessing helpers ────────────────────────────────────────────────────
 
@@ -401,7 +405,7 @@ def compute_metrics(eval_pred):
 # ── Optuna HPO ───────────────────────────────────────────────────────────────
 
 
-def run_hpo(train_ds, val_ds, model_name, num_labels, id2label, label2id):
+def run_hpo(train_ds, val_ds, model_name, num_labels, id2label, label2id, output_dir=OUTPUT_DIR):
     """
     Run Optuna hyperparameter search via Trainer.hyperparameter_search().
 
@@ -416,7 +420,7 @@ def run_hpo(train_ds, val_ds, model_name, num_labels, id2label, label2id):
     """
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-    hpo_dir = os.path.join(OUTPUT_DIR, "hpo_trials")
+    hpo_dir = os.path.join(output_dir, "hpo_trials")
     os.makedirs(hpo_dir, exist_ok=True)
 
     def model_init(trial=None):
@@ -475,7 +479,7 @@ def run_hpo(train_ds, val_ds, model_name, num_labels, id2label, label2id):
     print(f"  Hyperparameters      : {best_run.hyperparameters}")
 
     # Collect all trial results and save to CSV
-    csv_path = os.path.join(OUTPUT_DIR, "hpo_trials.csv")
+    csv_path = os.path.join(output_dir, "hpo_trials.csv")
     try:
         study_obj = optuna.load_study(study_name="wav2vec2_ravdess_hpo", storage=None)
         trials = study_obj.trials
@@ -521,7 +525,7 @@ def run_hpo(train_ds, val_ds, model_name, num_labels, id2label, label2id):
         "hpo_trials": HPO_TRIALS,
         "hpo_epochs_per_trial": HPO_EPOCHS,
     }
-    json_path = os.path.join(OUTPUT_DIR, "best_hyperparameters.json")
+    json_path = os.path.join(output_dir, "best_hyperparameters.json")
     with open(json_path, "w") as f:
         json.dump(best_params, f, indent=2)
     print(f"Saved best hyperparameters -> {json_path}")
@@ -530,7 +534,8 @@ def run_hpo(train_ds, val_ds, model_name, num_labels, id2label, label2id):
 
 
 def train(
-    train_ds, val_ds, model_name, num_labels, id2label, label2id, best_params=None
+    train_ds, val_ds, model_name, num_labels, id2label, label2id, best_params=None,
+    output_dir=OUTPUT_DIR, epochs=NUM_EPOCHS
 ):
     """
     Full training run with early stopping.
@@ -553,7 +558,7 @@ def train(
     print(f"  per_device_train_batch_size: {batch_size}")
     print(f"  warmup_ratio               : {warmup_ratio}")
     print(f"  weight_decay               : {weight_decay}")
-    print(f"  num_epochs (max)           : {NUM_EPOCHS}")
+    print(f"  num_epochs (max)           : {epochs}")
     print(f"  early_stopping_patience    : {EARLY_STOPPING_PATIENCE}")
 
     model = Wav2Vec2ForSequenceClassification.from_pretrained(
@@ -565,8 +570,8 @@ def train(
     )
 
     training_args = TrainingArguments(
-        output_dir=OUTPUT_DIR,
-        num_train_epochs=NUM_EPOCHS,
+        output_dir=output_dir,
+        num_train_epochs=epochs,
         per_device_train_batch_size=batch_size,
         per_device_eval_batch_size=batch_size,
         eval_strategy="epoch",
@@ -789,29 +794,41 @@ def evaluate_test(trainer, test_ds, test_raw, id2label, num_labels, output_dir):
     save_training_curves(trainer, output_dir)
 
 
-def main():
+def run(
+    dataset_name: str,
+    model_name: str = MODEL_NAME,
+    output_dir: str = OUTPUT_DIR,
+    epochs: int = NUM_EPOCHS,
+    lr: float = LEARNING_RATE,
+    batch_size: int = BATCH_SIZE,
+    hpo_trials: int = HPO_TRIALS,
+    seed: int = SEED,
+) -> None:
+    hf_name = DATASET_HF_MAP.get(dataset_name, dataset_name)
+    max_length = int(SAMPLING_RATE * MAX_DURATION)
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device              : {device}")
-    print(f"Model               : {MODEL_NAME}")
-    print(f"Dataset             : {DATASET_NAME}")
+    print(f"Model               : {model_name}")
+    print(f"Dataset             : {hf_name}")
     print(
-        f"Max epochs          : {NUM_EPOCHS}  (early stopping patience={EARLY_STOPPING_PATIENCE})"
+        f"Max epochs          : {epochs}  (early stopping patience={EARLY_STOPPING_PATIENCE})"
     )
-    print(f"Batch size          : {BATCH_SIZE}  (may be overridden by HPO)")
-    print(f"LR                  : {LEARNING_RATE}  (may be overridden by HPO)")
-    print(f"HPO trials          : {HPO_TRIALS}  (0 = disabled)")
+    print(f"Batch size          : {batch_size}  (may be overridden by HPO)")
+    print(f"LR                  : {lr}  (may be overridden by HPO)")
+    print(f"HPO trials          : {hpo_trials}  (0 = disabled)")
     print(
-        f"Max length          : {MAX_LENGTH:,} samples ({MAX_DURATION}s @ {SAMPLING_RATE} Hz)"
+        f"Max length          : {max_length:,} samples ({MAX_DURATION}s @ {SAMPLING_RATE} Hz)"
     )
 
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
 
-    raw_dataset, base_split, label_col, all_labels = load_and_explore(DATASET_NAME)
+    raw_dataset, base_split, label_col, all_labels = load_and_explore(hf_name)
     label_names, id2label, label2id, num_labels = build_label_maps(
         raw_dataset, base_split, label_col, all_labels
     )
     train_raw, val_raw, test_raw = split_dataset(
-        raw_dataset, base_split, label_col, all_labels, SEED
+        raw_dataset, base_split, label_col, all_labels, seed
     )
     train_ds, val_ds, test_ds, test_raw = preprocess_splits(
         train_raw,
@@ -820,30 +837,52 @@ def main():
         label_col,
         all_labels,
         label2id,
-        MODEL_NAME,
-        MAX_LENGTH,
+        model_name,
+        max_length,
     )
 
     # ── Optional HPO phase ────────────────────────────────────────────────
     best_params = None
-    if HPO_TRIALS > 0:
+    if hpo_trials > 0:
         best_params = run_hpo(
-            train_ds, val_ds, MODEL_NAME, num_labels, id2label, label2id
+            train_ds, val_ds, model_name, num_labels, id2label, label2id,
+            output_dir=output_dir,
         )
     else:
         print("\nHPO disabled. Using fixed hyperparameters from config.")
+        best_params = {
+            "learning_rate": lr,
+            "per_device_train_batch_size": batch_size,
+            "warmup_ratio": WARMUP_RATIO,
+            "weight_decay": WEIGHT_DECAY,
+        }
 
     # ── Final training run (with early stopping) ──────────────────────────
     trainer = train(
         train_ds,
         val_ds,
-        MODEL_NAME,
+        model_name,
         num_labels,
         id2label,
         label2id,
         best_params=best_params,
+        output_dir=output_dir,
+        epochs=epochs,
     )
-    evaluate_test(trainer, test_ds, test_raw, id2label, num_labels, OUTPUT_DIR)
+    evaluate_test(trainer, test_ds, test_raw, id2label, num_labels, output_dir)
+
+
+def main():
+    run(
+        dataset_name=DATASET_NAME,
+        model_name=MODEL_NAME,
+        output_dir=OUTPUT_DIR,
+        epochs=NUM_EPOCHS,
+        lr=LEARNING_RATE,
+        batch_size=BATCH_SIZE,
+        hpo_trials=HPO_TRIALS,
+        seed=SEED,
+    )
 
 
 if __name__ == "__main__":
