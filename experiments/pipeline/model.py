@@ -20,7 +20,7 @@ def load_model(hf_name: str, num_labels: int, id2label: dict, label2id: dict):
     Load a model for sequence classification.
 
     Tries AutoModelForAudioClassification first (handles wav2vec2, hubert,
-    wavlm, distilhubert, emotion2vec), then falls back to
+    wavlm, distilhubert), then falls back to
     Wav2Vec2ForSequenceClassification for models that predate the Auto API.
     """
     kwargs = dict(

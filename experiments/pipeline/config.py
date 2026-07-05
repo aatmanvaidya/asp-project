@@ -24,9 +24,11 @@ SEED       = 42
 MODELS: dict[str, str] = {
     "wav2vec2-base":    "facebook/wav2vec2-base",
     "hubert-xlarge":    "facebook/hubert-xlarge-ls960-ft",
-    "emotion2vec-base": "emotion2vec/emotion2vec_plus_base",
     "wavlm-large":      "microsoft/wavlm-large",
     "distilhubert":     "ntu-spml/distilhubert",
+    "hubert-base":      "facebook/hubert-base-ls960",
+    "wavlm-base":       "microsoft/wavlm-base",
+    "wav2vec2-large":   "facebook/wav2vec2-large",
 }
 
 DATASETS: dict[str, str] = {
