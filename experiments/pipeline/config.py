@@ -10,6 +10,10 @@ TEST_RATIO  = 0.15
 
 BATCH_SIZE    = 8
 NUM_EPOCHS    = 30
+# datasets.map() batch size during feature extraction — kept small because raw
+# audio arrays are fully decoded before truncation to MAX_LENGTH, and a large
+# batch (the datasets default is 1000) can OOM on bigger splits like CAMEO.
+PREPROCESS_BATCH_SIZE = 16
 LEARNING_RATE = 3e-5
 WEIGHT_DECAY  = 0.01
 WARMUP_RATIO  = 0.1

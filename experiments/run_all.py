@@ -31,7 +31,9 @@ Additional flags:
 import argparse
 import json
 import os
+import shutil
 import sys
+import time
 import traceback
 
 # ── Audio backend must be patched before ANY datasets/audio import ─────────────
@@ -39,6 +41,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pipeline.audio_backend  # noqa: F401, E402  (side-effect import — must be first)
 
 import torch  # noqa: E402
+from datasets import load_from_disk  # noqa: E402
 
 from pipeline.config import (  # noqa: E402
     BATCH_SIZE,
@@ -69,6 +72,70 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def _is_main() -> bool:
     """True on rank 0 and when not running under torchrun."""
     return int(os.environ.get("LOCAL_RANK", -1)) <= 0
+
+
+def _wait_for_file(path: str, poll_seconds: float = 5.0, timeout_seconds: float = 3600.0) -> None:
+    """Block until `path` exists, raising if the main rank never produces it."""
+    waited = 0.0
+    while not os.path.exists(path):
+        time.sleep(poll_seconds)
+        waited += poll_seconds
+        if waited >= timeout_seconds:
+            raise TimeoutError(f"Timed out after {timeout_seconds:.0f}s waiting for {path}")
+
+
+def _load_or_build_splits(hf_model: str, hf_dataset: str, seed: int, output_dir: str):
+    """Build train/val/test feature datasets once, cached under output_dir.
+
+    Under DDP (torchrun) every rank imports and calls this function, but only
+    rank 0 downloads/decodes/feature-extracts the raw audio — that pipeline is
+    expensive enough that doing it redundantly on all ranks at once has caused
+    the whole node to OOM. Other ranks wait for the cache and load it from
+    disk instead. This also means Stage 1 (single-GPU) primes the cache that
+    Stage 2 (4-GPU DDP) then reuses almost for free.
+    """
+    cache_dir     = os.path.join(output_dir, "_features")
+    ready_marker  = os.path.join(cache_dir, "READY")
+    label_map_path = os.path.join(cache_dir, "label_maps.json")
+
+    if _is_main() and not os.path.exists(ready_marker):
+        # Clear out any partial cache left by a job that died mid-write.
+        if os.path.exists(cache_dir):
+            shutil.rmtree(cache_dir)
+        raw, base_split, label_col, all_labels = load_dataset_hf(hf_dataset)
+        label_names, id2label, label2id, num_labels = build_label_maps(
+            raw, base_split, label_col, all_labels
+        )
+        train_raw, val_raw, test_raw = split_dataset(raw, base_split, label_col, all_labels, seed)
+        feature_extractor = load_feature_extractor(hf_model)
+        train_ds, val_ds, test_ds = preprocess_splits(
+            train_raw, val_raw, test_raw, label_col, all_labels, label2id, feature_extractor
+        )
+
+        os.makedirs(cache_dir, exist_ok=True)
+        train_ds.save_to_disk(os.path.join(cache_dir, "train"))
+        val_ds.save_to_disk(os.path.join(cache_dir, "val"))
+        test_ds.save_to_disk(os.path.join(cache_dir, "test"))
+        test_raw.save_to_disk(os.path.join(cache_dir, "test_raw"))
+        with open(label_map_path, "w") as f:
+            json.dump({"id2label": id2label, "label2id": label2id, "num_labels": num_labels}, f)
+        # Written last: its existence is the signal to other ranks that the cache is complete.
+        with open(ready_marker, "w") as f:
+            f.write("ok")
+
+    elif not _is_main():
+        _wait_for_file(ready_marker)
+
+    train_ds = load_from_disk(os.path.join(cache_dir, "train")).with_format("torch")
+    val_ds   = load_from_disk(os.path.join(cache_dir, "val")).with_format("torch")
+    test_ds  = load_from_disk(os.path.join(cache_dir, "test")).with_format("torch")
+    test_raw = load_from_disk(os.path.join(cache_dir, "test_raw"))
+    with open(label_map_path) as f:
+        maps = json.load(f)
+    id2label   = {int(k): v for k, v in maps["id2label"].items()}
+    label2id   = maps["label2id"]
+    num_labels = maps["num_labels"]
+    return train_ds, val_ds, test_ds, test_raw, id2label, label2id, num_labels
 
 
 def run_mfcc_experiment(
@@ -124,17 +191,8 @@ def run_experiment(
         os.makedirs(output_dir, exist_ok=True)
 
     # ── Data ──────────────────────────────────────────────────────────────────
-    raw, base_split, label_col, all_labels = load_dataset_hf(hf_dataset)
-    label_names, id2label, label2id, num_labels = build_label_maps(
-        raw, base_split, label_col, all_labels
-    )
-    train_raw, val_raw, test_raw = split_dataset(
-        raw, base_split, label_col, all_labels, seed
-    )
-
-    feature_extractor = load_feature_extractor(hf_model)
-    train_ds, val_ds, test_ds = preprocess_splits(
-        train_raw, val_raw, test_raw, label_col, all_labels, label2id, feature_extractor
+    train_ds, val_ds, test_ds, test_raw, id2label, label2id, num_labels = _load_or_build_splits(
+        hf_model, hf_dataset, seed, output_dir
     )
 
     # ── Hyperparameter selection ───────────────────────────────────────────────

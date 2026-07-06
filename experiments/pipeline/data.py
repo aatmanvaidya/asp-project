@@ -9,6 +9,7 @@ from .config import (
     CAMEO_CANONICAL_LABELS,
     CAMEO_LABEL_ALIASES,
     MAX_LENGTH,
+    PREPROCESS_BATCH_SIZE,
     RAVDESS_EMOTION_NAMES,
     SAMPLING_RATE,
     TEST_RATIO,
@@ -217,7 +218,14 @@ def preprocess_splits(
     )
 
     def _apply(ds, desc):
-        d = ds.map(fn, batched=True, num_proc=1, remove_columns=ds.column_names, desc=desc)
+        d = ds.map(
+            fn,
+            batched=True,
+            batch_size=PREPROCESS_BATCH_SIZE,
+            num_proc=1,
+            remove_columns=ds.column_names,
+            desc=desc,
+        )
         d.set_format("torch")
         return d
 
