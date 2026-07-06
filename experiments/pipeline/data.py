@@ -163,6 +163,8 @@ def _preprocess_batch(
     all_iv, all_am = [], []
     for x in batch["audio"]:
         arr = np.array(x["array"], dtype=np.float32)
+        if arr.ndim > 1:
+            arr = arr.mean(axis=1)
         arr = (
             arr[:max_length]
             if len(arr) >= max_length
