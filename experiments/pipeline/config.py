@@ -23,6 +23,17 @@ EARLY_STOPPING_THRESHOLD = 0.001
 
 HPO_TRIALS = 10  # Optuna trials per experiment (Stage 1 — single GPU only)
 HPO_EPOCHS = 3   # epochs per HPO trial (short, just enough to rank configs)
+
+# Large training sets (e.g. CAMEO's ~27k merged examples) make a full HPO
+# trial take ~40min regardless of batch size, so 20 trials x 3 epochs is
+# multiple GPU-days. Above this many train examples, HPO runs on a random
+# subsample with fewer trials/epochs — Stage 2 training still uses 100% of
+# the data, only hyperparameter search is shrunk.
+HPO_LARGE_DATASET_THRESHOLD = 10_000
+HPO_SUBSAMPLE_FRAC = 0.15
+HPO_TRIALS_LARGE   = 8
+HPO_EPOCHS_LARGE   = 2
+
 SEED       = 42
 
 MODELS: dict[str, str] = {

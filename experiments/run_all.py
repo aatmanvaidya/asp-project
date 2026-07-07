@@ -46,7 +46,12 @@ from datasets import load_from_disk  # noqa: E402
 from pipeline.config import (  # noqa: E402
     BATCH_SIZE,
     DATASETS,
+    HPO_EPOCHS,
+    HPO_EPOCHS_LARGE,
+    HPO_LARGE_DATASET_THRESHOLD,
+    HPO_SUBSAMPLE_FRAC,
     HPO_TRIALS,
+    HPO_TRIALS_LARGE,
     LEARNING_RATE,
     MODELS,
     NUM_EPOCHS,
@@ -229,10 +234,25 @@ def run_experiment(
                 _save_default_hparams(hpo_params_path, lr, batch_size, warmup, decay,
                                       note="defaults — HPO skipped (DDP mode)")
         elif main:
-            # Single-GPU HPO
+            # Single-GPU HPO. Large training sets get a subsample and a
+            # shrunk trial/epoch budget — Stage 2 training still uses 100%
+            # of the data, only this search is cut down (see config.py).
+            hpo_train_ds = train_ds
+            n_trials     = hpo_trials
+            n_epochs     = HPO_EPOCHS
+            if len(train_ds) > HPO_LARGE_DATASET_THRESHOLD:
+                n_sub = int(len(train_ds) * HPO_SUBSAMPLE_FRAC)
+                hpo_train_ds = train_ds.shuffle(seed=seed).select(range(n_sub))
+                n_trials = min(hpo_trials, HPO_TRIALS_LARGE)
+                n_epochs = HPO_EPOCHS_LARGE
+                print(
+                    f"  Large dataset ({len(train_ds):,} train examples): "
+                    f"HPO on {n_sub:,} ({HPO_SUBSAMPLE_FRAC:.0%}), "
+                    f"{n_trials} trials x {n_epochs} epochs"
+                )
             best = run_hpo(
-                train_ds, val_ds, hf_model, num_labels, id2label, label2id,
-                output_dir, n_trials=hpo_trials,
+                hpo_train_ds, val_ds, hf_model, num_labels, id2label, label2id,
+                output_dir, n_trials=n_trials, epochs=n_epochs,
             )
             lr         = best["learning_rate"]
             batch_size = int(best["per_device_train_batch_size"])
