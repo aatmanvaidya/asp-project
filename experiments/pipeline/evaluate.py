@@ -56,6 +56,7 @@ def save_results(
 
     _save_predictions_csv(labels, preds, test_raw, id2label, output_dir)
     _save_confusion_matrix(labels, preds, label_names, metrics["f1_macro"], output_dir)
+    _save_language_breakdown(labels, preds, test_raw, output_dir)
 
     print(
         f"  F1-Macro {metrics['f1_macro']:.4f} | "
@@ -112,6 +113,34 @@ def save_training_curves(trainer, output_dir: str) -> None:
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "training_curves.png"), dpi=150)
     plt.close()
+
+
+def _save_language_breakdown(labels, preds, test_raw, output_dir):
+    """Per-language accuracy/F1 for multilingual datasets (e.g. CAMEO); no-op otherwise."""
+    if "language" not in test_raw.column_names:
+        return
+
+    languages = test_raw["language"]
+    breakdown = {}
+    for lang in sorted(set(languages)):
+        idxs = [i for i, lg in enumerate(languages) if lg == lang]
+        y_true = [labels[i] for i in idxs]
+        y_pred = [preds[i]  for i in idxs]
+        breakdown[lang] = {
+            "n_samples":       len(idxs),
+            "accuracy":        float(np.mean([t == p for t, p in zip(y_true, y_pred)])),
+            "f1_macro":        f1_score(y_true, y_pred, average="macro",    zero_division=0),
+            "f1_weighted":     f1_score(y_true, y_pred, average="weighted", zero_division=0),
+            "precision_macro": precision_score(y_true, y_pred, average="macro", zero_division=0),
+            "recall_macro":    recall_score(y_true, y_pred, average="macro",    zero_division=0),
+        }
+
+    with open(os.path.join(output_dir, "metrics_by_language.json"), "w") as f:
+        json.dump(breakdown, f, indent=2)
+
+    print("  Per-language breakdown:")
+    for lang, m in breakdown.items():
+        print(f"    {lang:12s} n={m['n_samples']:4d}  F1-Macro={m['f1_macro']:.4f}")
 
 
 def _save_predictions_csv(labels, preds, test_raw, id2label, output_dir):

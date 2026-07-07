@@ -48,6 +48,35 @@ def generate_report(results: list[dict], output_dir: str) -> None:
                 )
         lines.append("")
 
+    # Per-language F1-macro breakdown, for datasets that produced
+    # metrics_by_language.json (e.g. multilingual CAMEO).
+    for dataset in datasets:
+        lang_f1: dict[str, dict[str, float]] = {}
+        for model in models:
+            lang_path = os.path.join(output_dir, f"{model}_{dataset}", "metrics_by_language.json")
+            if not os.path.exists(lang_path):
+                continue
+            with open(lang_path) as f:
+                lang_metrics = json.load(f)
+            for lang, m in lang_metrics.items():
+                lang_f1.setdefault(lang, {})[model] = m["f1_macro"]
+
+        if lang_f1:
+            lines += [
+                f"## Dataset: `{dataset}` — Language Breakdown (F1-Macro)",
+                "",
+                "| Language | " + " | ".join(f"`{m}`" for m in models) + " |",
+                "|----------|" + "|".join([":------:"] * len(models)) + "|",
+            ]
+            for lang in sorted(lang_f1):
+                row = f"| {lang} "
+                for model in models:
+                    v = lang_f1[lang].get(model)
+                    row += f"| {v:.4f} " if v is not None else "| — "
+                row += "|"
+                lines.append(row)
+            lines.append("")
+
     if len(datasets) > 1:
         lines += [
             "## Cross-Dataset Comparison — F1-Macro",

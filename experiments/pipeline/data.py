@@ -2,7 +2,7 @@
 import functools
 
 import numpy as np
-from datasets import Audio, load_dataset
+from datasets import Audio, DatasetDict, concatenate_datasets, load_dataset
 from sklearn.model_selection import train_test_split
 
 from .config import (
@@ -18,6 +18,14 @@ def load_dataset_hf(hf_name: str):
     """Load a HuggingFace dataset and return split info and raw labels."""
     print(f"\n  Loading: {hf_name}")
     raw = load_dataset(hf_name)
+
+    if len(raw) > 1:
+        # Some datasets (e.g. CAMEO) ship one HF split per sub-corpus rather
+        # than a train/test split — merge them into a single working split.
+        print(f"  Multiple splits found ({list(raw.keys())}) — concatenating into one.")
+        merged = concatenate_datasets([raw[s] for s in raw.keys()])
+        raw = DatasetDict({"all": merged})
+
     base_split = list(raw.keys())[0]
     features = raw[base_split].features
 
@@ -34,6 +42,36 @@ def load_dataset_hf(hf_name: str):
         print(f"    {u}: {c}")
 
     return raw, base_split, label_col, all_labels
+
+
+def filter_labels(raw, base_split, label_col, allowed_labels: set):
+    """Drop rows whose label is not in allowed_labels; returns updated (raw, all_labels)."""
+    base = raw[base_split]
+    before = len(base)
+    base = base.filter(lambda ex: ex[label_col] in allowed_labels)
+    raw[base_split] = base
+    after = len(base)
+    print(f"  Filtered to core emotions: {before:,} -> {after:,} samples ({before - after:,} dropped)")
+    all_labels = base.with_format("numpy")[label_col]
+    return raw, all_labels
+
+
+def subsample_for_hpo(train_ds, threshold: int, fraction: float, seed: int):
+    """
+    Stratified subsample of an already-featurised train split, used only for
+    Stage-1 HPO trials on large datasets. No-op if train_ds is at or below
+    threshold. Does not affect the train split used for Stage-2 training.
+    """
+    n = len(train_ds)
+    if n <= threshold:
+        return train_ds
+
+    target = max(1, int(n * fraction))
+    labels = np.asarray(train_ds["labels"])
+    idx = np.arange(n)
+    sub_idx, _ = train_test_split(idx, train_size=target, stratify=labels, random_state=seed)
+    print(f"  HPO subsample: {n:,} -> {len(sub_idx):,} train samples (stratified, {fraction:.0%})")
+    return train_ds.select(sub_idx)
 
 
 def build_label_maps(raw, base_split, label_col, all_labels):
@@ -56,21 +94,51 @@ def build_label_maps(raw, base_split, label_col, all_labels):
     return label_names, id2label, label2id, len(label_names)
 
 
-def split_dataset(raw, base_split, label_col, all_labels, seed: int):
-    """Stratified 70 / 15 / 15 split."""
+def split_dataset(raw, base_split, label_col, all_labels, seed: int, extra_stratify_col: str | None = None):
+    """
+    Stratified 70 / 15 / 15 split.
+
+    If extra_stratify_col is given (e.g. "language" for CAMEO), stratifies on
+    the composite (extra_col, label) key so each split preserves per-language
+    label proportions. Falls back to label-only stratification if a
+    language/emotion cell is too small for sklearn to split.
+    """
     base = raw[base_split]
     idx = list(range(len(base)))
 
-    train_idx, tmp_idx = train_test_split(
-        idx, test_size=VAL_RATIO + TEST_RATIO, stratify=all_labels, random_state=seed
-    )
-    tmp_labels = [all_labels[i] for i in tmp_idx]
-    val_idx, test_idx = train_test_split(
-        tmp_idx,
-        test_size=TEST_RATIO / (VAL_RATIO + TEST_RATIO),
-        stratify=tmp_labels,
-        random_state=seed,
-    )
+    strat_key = list(all_labels)
+    if extra_stratify_col and extra_stratify_col in base.column_names:
+        extra_vals = base.with_format("numpy")[extra_stratify_col]
+        strat_key = [f"{e}|{l}" for e, l in zip(extra_vals, all_labels)]  # noqa: E741
+
+    try:
+        train_idx, tmp_idx = train_test_split(
+            idx, test_size=VAL_RATIO + TEST_RATIO, stratify=strat_key, random_state=seed
+        )
+    except ValueError:
+        print(f"  WARNING: composite stratify on '{extra_stratify_col}' + label failed "
+              "(too few samples in a cell) — falling back to label-only stratify")
+        strat_key = list(all_labels)
+        train_idx, tmp_idx = train_test_split(
+            idx, test_size=VAL_RATIO + TEST_RATIO, stratify=strat_key, random_state=seed
+        )
+
+    tmp_strat = [strat_key[i] for i in tmp_idx]
+    try:
+        val_idx, test_idx = train_test_split(
+            tmp_idx,
+            test_size=TEST_RATIO / (VAL_RATIO + TEST_RATIO),
+            stratify=tmp_strat,
+            random_state=seed,
+        )
+    except ValueError:
+        tmp_labels = [all_labels[i] for i in tmp_idx]
+        val_idx, test_idx = train_test_split(
+            tmp_idx,
+            test_size=TEST_RATIO / (VAL_RATIO + TEST_RATIO),
+            stratify=tmp_labels,
+            random_state=seed,
+        )
 
     train_raw = base.select(train_idx)
     val_raw   = base.select(val_idx)

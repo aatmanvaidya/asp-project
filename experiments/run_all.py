@@ -37,7 +37,10 @@ import torch  # noqa: E402
 
 from pipeline.config import (  # noqa: E402
     BATCH_SIZE,
+    CAMEO_CORE_EMOTIONS,
     DATASETS,
+    HPO_SUBSAMPLE_FRACTION,
+    HPO_SUBSAMPLE_THRESHOLD,
     HPO_TRIALS,
     LEARNING_RATE,
     MODELS,
@@ -48,9 +51,11 @@ from pipeline.config import (  # noqa: E402
 )
 from pipeline.data import (  # noqa: E402
     build_label_maps,
+    filter_labels,
     load_dataset_hf,
     preprocess_splits,
     split_dataset,
+    subsample_for_hpo,
 )
 from pipeline.evaluate import run_inference, save_results, save_training_curves  # noqa: E402
 from pipeline.model import load_feature_extractor, load_model  # noqa: E402
@@ -82,11 +87,20 @@ def run_experiment(
 
     # ── Data ──────────────────────────────────────────────────────────────────
     raw, base_split, label_col, all_labels = load_dataset_hf(hf_dataset)
+
+    # CAMEO spans 13 sub-corpora with only partially overlapping emotion
+    # vocabularies — restrict to the shared core emotions (see config.py).
+    if dataset_key == "cameo":
+        raw, all_labels = filter_labels(raw, base_split, label_col, CAMEO_CORE_EMOTIONS)
+
     label_names, id2label, label2id, num_labels = build_label_maps(
         raw, base_split, label_col, all_labels
     )
+    # CAMEO also gets language-aware stratification so per-language test
+    # proportions (and thus per-language F1-macro) stay meaningful.
+    extra_stratify_col = "language" if dataset_key == "cameo" else None
     train_raw, val_raw, test_raw = split_dataset(
-        raw, base_split, label_col, all_labels, seed
+        raw, base_split, label_col, all_labels, seed, extra_stratify_col=extra_stratify_col
     )
 
     feature_extractor = load_feature_extractor(hf_model)
@@ -128,9 +142,13 @@ def run_experiment(
                 _save_default_hparams(hpo_params_path, lr, batch_size, warmup, decay,
                                       note="defaults — HPO skipped (DDP mode)")
         elif main:
-            # Single-GPU HPO
+            # Single-GPU HPO — subsample large train splits (e.g. CAMEO) so
+            # Stage-1 search doesn't dominate the wall-clock budget.
+            hpo_train_ds = subsample_for_hpo(
+                train_ds, HPO_SUBSAMPLE_THRESHOLD, HPO_SUBSAMPLE_FRACTION, seed
+            )
             best = run_hpo(
-                train_ds, val_ds, hf_model, num_labels, id2label, label2id,
+                hpo_train_ds, val_ds, hf_model, num_labels, id2label, label2id,
                 output_dir, n_trials=hpo_trials,
             )
             lr         = best["learning_rate"]
