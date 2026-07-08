@@ -7,7 +7,6 @@ or save features to a .npz and pass the path as a CLI argument:
 """
 
 import csv
-import json
 import os
 import sys
 import numpy as np
@@ -16,13 +15,7 @@ import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import (
-    classification_report,
-    confusion_matrix,
-    f1_score,
-    precision_score,
-    recall_score,
-)
+from sklearn.metrics import classification_report, confusion_matrix, f1_score
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -56,8 +49,7 @@ def run(
     epochs: int = EPOCHS,
     lr: float = LR,
     batch_size: int = BATCH_SIZE,
-    output_dir: str | None = None,
-) -> dict:
+) -> None:
     """Train and evaluate the 1D CNN baseline.
 
     Args:
@@ -67,15 +59,9 @@ def run(
         epochs: number of training epochs
         lr: AdamW learning rate
         batch_size: DataLoader batch size
-        output_dir: directory for results/model; defaults to baselines/results
-
-    Returns:
-        dict with accuracy, f1_macro, f1_weighted, precision_macro, recall_macro
     """
-    results_dir = output_dir if output_dir is not None else RESULTS_DIR
-    models_dir = os.path.join(output_dir, "models") if output_dir is not None else MODELS_DIR
-    os.makedirs(results_dir, exist_ok=True)
-    os.makedirs(models_dir, exist_ok=True)
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    os.makedirs(MODELS_DIR, exist_ok=True)
 
     N, C, T = X.shape
     n_classes = len(label_names)
@@ -164,23 +150,7 @@ def run(
     print(f"F1-Weighted : {f1_weighted:.4f}")
     print(f"Accuracy    : {accuracy:.4f}")
 
-    precision_macro = precision_score(all_true, all_preds, average="macro", zero_division=0)
-    recall_macro = recall_score(all_true, all_preds, average="macro", zero_division=0)
-
-    metrics = {
-        "accuracy":        accuracy,
-        "f1_macro":        f1_macro,
-        "f1_weighted":     f1_weighted,
-        "precision_macro": precision_macro,
-        "recall_macro":    recall_macro,
-    }
-
-    metrics_path = os.path.join(results_dir, "metrics.json")
-    with open(metrics_path, "w") as f:
-        json.dump(metrics, f, indent=2)
-    print(f"Saved: {metrics_path}")
-
-    report_path = os.path.join(results_dir, "report.txt")
+    report_path = os.path.join(RESULTS_DIR, "report.txt")
     with open(report_path, "w") as f:
         f.write(report)
         f.write(f"\nF1-Macro    : {f1_macro:.4f}\n")
@@ -198,12 +168,12 @@ def run(
     ax.set_ylabel("True")
     ax.set_title(f"Confusion Matrix — MFCC 1D CNN Baseline  (F1-Macro={f1_macro:.3f})")
     plt.tight_layout()
-    cm_path = os.path.join(results_dir, "confusion_matrix.png")
+    cm_path = os.path.join(RESULTS_DIR, "confusion_matrix.png")
     plt.savefig(cm_path, dpi=150)
     plt.close()
     print(f"Saved: {cm_path}")
 
-    preds_csv_path = os.path.join(results_dir, "test_predictions.csv")
+    preds_csv_path = os.path.join(RESULTS_DIR, "test_predictions.csv")
     with open(preds_csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=["index", "ground_truth", "predicted", "correct"])
         writer.writeheader()
@@ -216,7 +186,7 @@ def run(
             })
     print(f"Saved: {preds_csv_path}")
 
-    loss_csv_path = os.path.join(results_dir, "train_loss_history.csv")
+    loss_csv_path = os.path.join(RESULTS_DIR, "train_loss_history.csv")
     with open(loss_csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=["epoch", "train_loss"])
         writer.writeheader()
@@ -224,7 +194,7 @@ def run(
             writer.writerow({"epoch": i, "train_loss": loss})
     print(f"Saved: {loss_csv_path}")
 
-    val_csv_path = os.path.join(results_dir, "val_metrics_history.csv")
+    val_csv_path = os.path.join(RESULTS_DIR, "val_metrics_history.csv")
     with open(val_csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=["epoch", "val_loss", "f1_macro", "f1_weighted", "accuracy"])
         writer.writeheader()
@@ -255,16 +225,14 @@ def run(
     ax_loss.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    curves_path = os.path.join(results_dir, "training_curves.png")
+    curves_path = os.path.join(RESULTS_DIR, "training_curves.png")
     plt.savefig(curves_path, dpi=150)
     plt.close()
     print(f"Saved: {curves_path}")
 
-    model_path = os.path.join(models_dir, "mfcc_cnn.pt")
+    model_path = os.path.join(MODELS_DIR, "mfcc_cnn.pt")
     torch.save(model.state_dict(), model_path)
     print(f"Saved: {model_path}")
-
-    return metrics
 
 
 if __name__ == "__main__":

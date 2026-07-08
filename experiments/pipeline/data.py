@@ -2,91 +2,21 @@
 import functools
 
 import numpy as np
-from datasets import Audio, DatasetDict, concatenate_datasets, load_dataset
+from datasets import Audio, load_dataset
 from sklearn.model_selection import train_test_split
 
 from .config import (
-    CAMEO_CANONICAL_LABELS,
-    CAMEO_LABEL_ALIASES,
     MAX_LENGTH,
-    PREPROCESS_BATCH_SIZE,
     RAVDESS_EMOTION_NAMES,
     SAMPLING_RATE,
     TEST_RATIO,
     VAL_RATIO,
 )
 
-_CAMEO_CANONICAL = frozenset(CAMEO_CANONICAL_LABELS)
-
-
-def _normalize_cameo_label(raw: str) -> str | None:
-    label = raw.strip().lower()
-    if label in _CAMEO_CANONICAL:
-        return label
-    mapped = CAMEO_LABEL_ALIASES.get(label, "UNKNOWN")
-    return mapped  # None means drop; "UNKNOWN" means unknown → drop
-
-
-def _load_cameo(hf_name: str):
-    """Load all CAMEO sub-splits, harmonize emotion labels, and concatenate."""
-    raw_all = load_dataset(hf_name)
-    parts = []
-    dropped_total = 0
-
-    for split_name, ds in raw_all.items():
-        if "emotion" not in ds.column_names or "audio" not in ds.column_names:
-            print(f"    Skipping CAMEO split '{split_name}' (missing audio/emotion column)")
-            continue
-
-        before = len(ds)
-
-        def _norm(example, aliases=CAMEO_LABEL_ALIASES, canonical=_CAMEO_CANONICAL):
-            label = str(example["emotion"]).strip().lower()
-            if label in canonical:
-                example["emotion"] = label
-            else:
-                example["emotion"] = aliases.get(label, None) or "__drop__"
-            return example
-
-        ds = ds.map(_norm, desc=f"  Normalising {split_name}")
-        ds = ds.filter(lambda ex: ex["emotion"] != "__drop__", desc=f"  Filtering {split_name}")
-        dropped_total += before - len(ds)
-
-        if len(ds) == 0:
-            continue
-
-        # Standardise columns so concatenate_datasets works across all splits
-        keep_cols = [c for c in ["audio", "emotion"] if c in ds.column_names]
-        ds = ds.select_columns(keep_cols)
-        # Cast audio to a uniform type so features match across splits
-        ds = ds.cast_column("audio", Audio(sampling_rate=SAMPLING_RATE))
-        parts.append(ds)
-
-    if not parts:
-        raise RuntimeError("No usable CAMEO splits found.")
-
-    combined = concatenate_datasets(parts)
-    print(f"  CAMEO combined: {len(combined):,} samples ({dropped_total:,} dropped)")
-
-    return DatasetDict({"all": combined})
-
 
 def load_dataset_hf(hf_name: str):
     """Load a HuggingFace dataset and return split info and raw labels."""
     print(f"\n  Loading: {hf_name}")
-
-    if hf_name == "amu-cai/CAMEO":
-        raw = _load_cameo(hf_name)
-        base_split = "all"
-        label_col = "emotion"
-        all_labels = np.array(raw[base_split]["emotion"], dtype=str)
-        unique, counts = np.unique(all_labels, return_counts=True)
-        print(f"  Label col : {label_col}")
-        print(f"  Samples   : {len(all_labels):,}  |  Classes: {len(unique)}")
-        for u, c in zip(unique, counts):
-            print(f"    {u}: {c}")
-        return raw, base_split, label_col, all_labels
-
     raw = load_dataset(hf_name)
     base_split = list(raw.keys())[0]
     features = raw[base_split].features
@@ -163,8 +93,6 @@ def _preprocess_batch(
     all_iv, all_am = [], []
     for x in batch["audio"]:
         arr = np.array(x["array"], dtype=np.float32)
-        if arr.ndim > 1:
-            arr = arr.mean(axis=1)
         arr = (
             arr[:max_length]
             if len(arr) >= max_length
@@ -220,14 +148,7 @@ def preprocess_splits(
     )
 
     def _apply(ds, desc):
-        d = ds.map(
-            fn,
-            batched=True,
-            batch_size=PREPROCESS_BATCH_SIZE,
-            num_proc=1,
-            remove_columns=ds.column_names,
-            desc=desc,
-        )
+        d = ds.map(fn, batched=True, num_proc=1, remove_columns=ds.column_names, desc=desc)
         d.set_format("torch")
         return d
 

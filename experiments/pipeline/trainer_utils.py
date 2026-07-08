@@ -45,7 +45,6 @@ def run_hpo(
     label2id: dict,
     output_dir: str,
     n_trials: int,
-    epochs: int = HPO_EPOCHS,
 ) -> dict:
     """
     Optuna hyperparameter search via Trainer.hyperparameter_search().
@@ -71,7 +70,7 @@ def run_hpo(
 
     hpo_args = TrainingArguments(
         output_dir=hpo_dir,
-        num_train_epochs=epochs,
+        num_train_epochs=HPO_EPOCHS,
         eval_strategy="epoch",
         save_strategy="no",
         load_best_model_at_end=False,
@@ -90,7 +89,7 @@ def run_hpo(
         compute_metrics=compute_metrics,
     )
 
-    print(f"  HPO: {n_trials} trials × {epochs} epochs (on {len(train_ds):,} examples) ...")
+    print(f"  HPO: {n_trials} trials × {HPO_EPOCHS} epochs ...")
     best = trainer.hyperparameter_search(
         direction="maximize",
         backend="optuna",

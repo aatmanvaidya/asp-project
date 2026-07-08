@@ -5,12 +5,11 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
 #SBATCH --gres=gpu:4
-#SBATCH --mem=0
 #SBATCH --time=8:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --mail-type=END,FAIL
-#SBATCH --mail-user=konrad-rudolf.brueggemann@student.uni-tuebingen.de
+#SBATCH --mail-user=aatman-vrundavan.vaidya@student.uni-tuebingen.de
 
 echo "============================================"
 echo "Emotion Recognition Pipeline"
@@ -20,7 +19,7 @@ echo "Node      : $SLURM_NODELIST"
 echo "Start time: $(date)"
 echo ""
 
-PROJECT_ROOT="/home/tu/tu_tu/tu_zxoqp65/work/asp-project"
+PROJECT_ROOT="/home/tu/tu_tu/tu_zxord71/asp-project"
 SCRIPT_DIR="$PROJECT_ROOT/experiments"
 OUTPUT_DIR="$PROJECT_ROOT/outputs"
 
@@ -76,7 +75,6 @@ echo ""
 
 CUDA_VISIBLE_DEVICES=0 python "$SCRIPT_DIR/run_all.py" \
     --output_dir "$OUTPUT_DIR" \
-    --datasets ravdess cameo \
     --hpo_trials 20 \
     --hpo_only \
     --seed 42
@@ -109,13 +107,10 @@ torchrun \
     --nproc_per_node=4 \
     "$SCRIPT_DIR/run_all.py" \
     --output_dir "$OUTPUT_DIR" \
-    --datasets ravdess cameo \
     --epochs 30 \
     --batch_size 8 \
     --seed 42 \
-    --skip_done \
-    --include_mfcc \
-    --mfcc_epochs 50
+    --skip_done
 
 STAGE2_EXIT=$?
 
