@@ -76,7 +76,7 @@ echo ""
 
 CUDA_VISIBLE_DEVICES=0 python "$SCRIPT_DIR/run_all.py" \
     --output_dir "$OUTPUT_DIR" \
-    --datasets ravdess cameo \
+    --datasets ravdess emodb cameo \
     --hpo_trials 20 \
     --hpo_only \
     --seed 42
@@ -109,7 +109,7 @@ torchrun \
     --nproc_per_node=4 \
     "$SCRIPT_DIR/run_all.py" \
     --output_dir "$OUTPUT_DIR" \
-    --datasets ravdess cameo \
+    --datasets ravdess emodb cameo \
     --epochs 30 \
     --batch_size 8 \
     --seed 42 \
