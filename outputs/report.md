@@ -37,3 +37,17 @@ Experiments: 7 models × 2 datasets
 | `wav2vec2-large` | 0.8164 | 0.8700 |
 | `wavlm-base` | 0.9656 | 0.8642 |
 | `wavlm-large` | 0.9863 | 0.8898 |
+
+## All Datasets — Accuracy & F1-Macro
+
+CAMEO was not run on all models (`hubert-base`, `wav2vec2-large`, `wavlm-base` are missing; `emotion2vec-base` failed to load on every dataset it was attempted on and is omitted).
+
+| Model | EmoDB Acc | EmoDB F1 | RAVDESS Acc | RAVDESS F1 | CAMEO Acc | CAMEO F1 |
+|-------|:---------:|:--------:|:------------:|:-----------:|:---------:|:--------:|
+| `distilhubert` | 0.8272 | 0.8199 | 0.7963 | 0.7862 | 0.7905 | 0.7787 |
+| `hubert-base` | 0.9383 | 0.9430 | 0.8426 | 0.8133 | — | — |
+| `hubert-xlarge` | 0.9136 | 0.9157 | 0.9028 | 0.9006 | 0.9082 | 0.9036 |
+| `wav2vec2-base` | 0.9383 | 0.9377 | 0.8981 | 0.8951 | 0.8759 | 0.8690 |
+| `wav2vec2-large` | 0.8395 | 0.8164 | 0.8796 | 0.8700 | — | — |
+| `wavlm-base` | 0.9630 | 0.9656 | 0.8704 | 0.8642 | — | — |
+| `wavlm-large` | 0.9877 | 0.9863 | 0.8981 | 0.8898 | 0.8726 | 0.8639 |
