@@ -20,6 +20,116 @@ def run_inference(trainer, test_ds):
     return trainer.predict(test_ds)
 
 
+def aggregate_cv_metrics(fold_metrics: list[dict], output_dir: str) -> dict:
+    """
+    Aggregate per-fold test metrics (each a dict as returned by save_results)
+    into a mean and 95% CI (t-distribution, df = n_folds - 1) per metric.
+
+    Persists the full per-fold detail to cv_metrics.json and returns a flat
+    dict — {metric, metric_std, metric_ci95_margin, metric_ci95_lower,
+    metric_ci95_upper, ...} — suitable for the results list consumed by
+    report.generate_report().
+    """
+    from scipy import stats
+
+    n = len(fold_metrics)
+    metric_keys = [k for k, v in fold_metrics[0].items() if isinstance(v, (int, float))]
+    t_crit = float(stats.t.ppf(0.975, df=n - 1)) if n > 1 else float("nan")
+
+    detail: dict = {}
+    flat: dict = {"n_folds": n}
+    for key in metric_keys:
+        vals = np.array([m[key] for m in fold_metrics], dtype=float)
+        mean = float(vals.mean())
+        std = float(vals.std(ddof=1)) if n > 1 else 0.0
+        margin = float(t_crit * std / np.sqrt(n)) if n > 1 else 0.0
+        detail[key] = {
+            "mean": mean,
+            "std": std,
+            "ci95_margin": margin,
+            "ci95_lower": mean - margin,
+            "ci95_upper": mean + margin,
+            "fold_values": vals.tolist(),
+        }
+        flat[key] = mean
+        flat[f"{key}_std"] = std
+        flat[f"{key}_ci95_margin"] = margin
+        flat[f"{key}_ci95_lower"] = mean - margin
+        flat[f"{key}_ci95_upper"] = mean + margin
+
+    with open(os.path.join(output_dir, "cv_metrics.json"), "w") as f:
+        json.dump({"n_folds": n, "metrics": detail}, f, indent=2)
+
+    print(f"\n  {n}-fold CV summary (mean ± 95% CI):")
+    for key in ["f1_macro", "f1_weighted", "precision_macro", "recall_macro", "accuracy"]:
+        if key in detail:
+            d = detail[key]
+            print(
+                f"    {key:16s} = {d['mean']:.4f} ± {d['ci95_margin']:.4f}"
+                f"  (95% CI [{d['ci95_lower']:.4f}, {d['ci95_upper']:.4f}])"
+            )
+
+    return flat
+
+
+def aggregate_cv_language_metrics(fold_lang_metrics: list[dict], output_dir: str) -> dict:
+    """
+    Aggregate per-fold per-language metrics (each element is one fold's
+    metrics_by_language.json content) into mean ± 95% CI per language, across
+    the folds where that language appeared in the test fold. Persists to
+    cv_metrics_by_language.json. No-op if fold_lang_metrics is empty (i.e.
+    dataset has no "language" column, such as RAVDESS/EMODB).
+    """
+    from scipy import stats
+
+    if not fold_lang_metrics:
+        return {}
+
+    languages = sorted({lang for fm in fold_lang_metrics for lang in fm})
+    result: dict = {}
+    for lang in languages:
+        per_fold = [fm[lang] for fm in fold_lang_metrics if lang in fm]
+        n = len(per_fold)
+        metric_keys = [k for k, v in per_fold[0].items() if isinstance(v, (int, float))]
+        t_crit = float(stats.t.ppf(0.975, df=n - 1)) if n > 1 else float("nan")
+
+        lang_summary = {"n_folds": n}
+        for key in metric_keys:
+            vals = np.array([m[key] for m in per_fold], dtype=float)
+            mean = float(vals.mean())
+            std = float(vals.std(ddof=1)) if n > 1 else 0.0
+            margin = float(t_crit * std / np.sqrt(n)) if n > 1 else 0.0
+            lang_summary[key] = {
+                "mean": mean,
+                "std": std,
+                "ci95_margin": margin,
+                "ci95_lower": mean - margin,
+                "ci95_upper": mean + margin,
+            }
+        result[lang] = lang_summary
+
+    with open(os.path.join(output_dir, "cv_metrics_by_language.json"), "w") as f:
+        json.dump(result, f, indent=2)
+    return result
+
+
+def load_cv_metrics(output_dir: str) -> dict:
+    """Load a previously saved cv_metrics.json, flattened like aggregate_cv_metrics()
+    returns — used to repopulate the results/report when --skip_done skips an
+    already-completed experiment."""
+    with open(os.path.join(output_dir, "cv_metrics.json")) as f:
+        cv_data = json.load(f)
+
+    flat = {"n_folds": cv_data.get("n_folds")}
+    for key, d in cv_data.get("metrics", {}).items():
+        flat[key] = d["mean"]
+        flat[f"{key}_std"] = d["std"]
+        flat[f"{key}_ci95_margin"] = d["ci95_margin"]
+        flat[f"{key}_ci95_lower"] = d["ci95_lower"]
+        flat[f"{key}_ci95_upper"] = d["ci95_upper"]
+    return flat
+
+
 def save_results(
     pred_output,
     test_raw,
@@ -180,4 +290,21 @@ def _save_confusion_matrix(labels, preds, label_names, f1_macro, output_dir):
     plt.xticks(rotation=45, ha="right")
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "confusion_matrix.png"), dpi=150)
+    plt.close()
+
+    # Row-normalized (per true class) — each row sums to 1, so classes with
+    # few test samples are as visible as high-count classes.
+    cm_norm = confusion_matrix(labels, preds, normalize="true")
+    fig, ax = plt.subplots(figsize=(10, 8))
+    sns.heatmap(
+        cm_norm, annot=True, fmt=".2f", cmap="Blues", vmin=0.0, vmax=1.0,
+        xticklabels=label_names, yticklabels=label_names,
+        ax=ax, linewidths=0.5,
+    )
+    ax.set_title(f"Confusion Matrix — Normalized by True Class  (F1-Macro={f1_macro:.3f})", fontsize=14, pad=14)
+    ax.set_ylabel("True Label", fontsize=12)
+    ax.set_xlabel("Predicted Label", fontsize=12)
+    plt.xticks(rotation=45, ha="right")
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "confusion_matrix_normalised.png"), dpi=150)
     plt.close()

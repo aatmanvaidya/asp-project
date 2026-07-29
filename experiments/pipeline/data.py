@@ -3,13 +3,14 @@ import functools
 
 import numpy as np
 from datasets import Audio, DatasetDict, concatenate_datasets, load_dataset
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedKFold, train_test_split
 
 from .config import (
     MAX_LENGTH,
     RAVDESS_EMOTION_NAMES,
     SAMPLING_RATE,
     TEST_RATIO,
+    TRAIN_RATIO,
     VAL_RATIO,
 )
 
@@ -94,9 +95,22 @@ def build_label_maps(raw, base_split, label_col, all_labels):
     return label_names, id2label, label2id, len(label_names)
 
 
+def _stratify_key(base, all_labels, extra_stratify_col: str | None):
+    """Composite (extra_col, label) stratify key, or label-only if no extra_stratify_col."""
+    strat_key = np.array(list(all_labels), dtype=object)
+    if extra_stratify_col and extra_stratify_col in base.column_names:
+        extra_vals = base.with_format("numpy")[extra_stratify_col]
+        strat_key = np.array(
+            [f"{e}|{l}" for e, l in zip(extra_vals, all_labels)], dtype=object  # noqa: E741
+        )
+    return strat_key
+
+
 def split_dataset(raw, base_split, label_col, all_labels, seed: int, extra_stratify_col: str | None = None):
     """
-    Stratified 70 / 15 / 15 split.
+    Stratified 70 / 15 / 15 split. Returns (train_idx, val_idx, test_idx) index
+    arrays into raw[base_split] — used only to select the HPO train/val split
+    (Stage 1); final evaluation uses kfold_split_dataset() instead.
 
     If extra_stratify_col is given (e.g. "language" for CAMEO), stratifies on
     the composite (extra_col, label) key so each split preserves per-language
@@ -104,13 +118,10 @@ def split_dataset(raw, base_split, label_col, all_labels, seed: int, extra_strat
     language/emotion cell is too small for sklearn to split.
     """
     base = raw[base_split]
-    idx = list(range(len(base)))
+    idx = np.arange(len(base))
+    label_only = np.array(list(all_labels), dtype=object)
 
-    strat_key = list(all_labels)
-    if extra_stratify_col and extra_stratify_col in base.column_names:
-        extra_vals = base.with_format("numpy")[extra_stratify_col]
-        strat_key = [f"{e}|{l}" for e, l in zip(extra_vals, all_labels)]  # noqa: E741
-
+    strat_key = _stratify_key(base, all_labels, extra_stratify_col)
     try:
         train_idx, tmp_idx = train_test_split(
             idx, test_size=VAL_RATIO + TEST_RATIO, stratify=strat_key, random_state=seed
@@ -118,12 +129,12 @@ def split_dataset(raw, base_split, label_col, all_labels, seed: int, extra_strat
     except ValueError:
         print(f"  WARNING: composite stratify on '{extra_stratify_col}' + label failed "
               "(too few samples in a cell) — falling back to label-only stratify")
-        strat_key = list(all_labels)
+        strat_key = label_only
         train_idx, tmp_idx = train_test_split(
             idx, test_size=VAL_RATIO + TEST_RATIO, stratify=strat_key, random_state=seed
         )
 
-    tmp_strat = [strat_key[i] for i in tmp_idx]
+    tmp_strat = strat_key[tmp_idx]
     try:
         val_idx, test_idx = train_test_split(
             tmp_idx,
@@ -132,21 +143,67 @@ def split_dataset(raw, base_split, label_col, all_labels, seed: int, extra_strat
             random_state=seed,
         )
     except ValueError:
-        tmp_labels = [all_labels[i] for i in tmp_idx]
         val_idx, test_idx = train_test_split(
             tmp_idx,
             test_size=TEST_RATIO / (VAL_RATIO + TEST_RATIO),
-            stratify=tmp_labels,
+            stratify=label_only[tmp_idx],
             random_state=seed,
         )
 
-    train_raw = base.select(train_idx)
-    val_raw   = base.select(val_idx)
-    test_raw  = base.select(test_idx)
-
     n = len(base)
-    print(f"  Split     : {len(train_raw):,} train / {len(val_raw):,} val / {len(test_raw):,} test  (of {n:,})")
-    return train_raw, val_raw, test_raw
+    print(f"  Split     : {len(train_idx):,} train / {len(val_idx):,} val / {len(test_idx):,} test  (of {n:,})")
+    return train_idx, val_idx, test_idx
+
+
+def kfold_split_dataset(
+    raw, base_split, label_col, all_labels, seed: int,
+    n_splits: int, extra_stratify_col: str | None = None,
+):
+    """
+    Stratified n_splits-fold CV. Yields (fold_idx, train_idx, val_idx, test_idx)
+    index arrays into raw[base_split] for each fold.
+
+    Each fold's test set is one of the n_splits held-out folds (so the test
+    proportion is fixed at 1/n_splits, independent of TEST_RATIO); train/val
+    are then carved from the remaining folds using the same TRAIN_RATIO :
+    VAL_RATIO proportions as the single-split mode, so early stopping still
+    has a validation set distinct from the fold's test data.
+
+    Uses the same composite (extra_stratify_col, label) stratification and
+    label-only fallback as split_dataset().
+    """
+    base = raw[base_split]
+    idx = np.arange(len(base))
+    label_only = np.array(list(all_labels), dtype=object)
+
+    strat_key = _stratify_key(base, all_labels, extra_stratify_col)
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    try:
+        folds = list(skf.split(idx, strat_key))
+    except ValueError:
+        print(f"  WARNING: composite stratify on '{extra_stratify_col}' + label failed "
+              f"for {n_splits}-fold CV (too few samples in a cell) — falling back to label-only stratify")
+        strat_key = label_only
+        folds = list(skf.split(idx, strat_key))
+
+    val_frac = VAL_RATIO / (TRAIN_RATIO + VAL_RATIO)
+    n = len(base)
+
+    for fold_i, (trainval_idx, test_idx) in enumerate(folds):
+        try:
+            train_idx, val_idx = train_test_split(
+                trainval_idx, test_size=val_frac, stratify=strat_key[trainval_idx], random_state=seed,
+            )
+        except ValueError:
+            train_idx, val_idx = train_test_split(
+                trainval_idx, test_size=val_frac, stratify=label_only[trainval_idx], random_state=seed,
+            )
+
+        print(
+            f"  Fold {fold_i + 1}/{n_splits}: {len(train_idx):,} train / "
+            f"{len(val_idx):,} val / {len(test_idx):,} test  (of {n:,})"
+        )
+        yield fold_i, train_idx, val_idx, test_idx
 
 
 def _preprocess_batch(
@@ -187,20 +244,22 @@ def _preprocess_batch(
     return {"input_values": all_iv, "attention_mask": all_am, "labels": labels}
 
 
-def preprocess_splits(
-    train_raw,
-    val_raw,
-    test_raw,
+def featurise_split(
+    raw_split,
     label_col: str,
     all_labels,
     label2id: dict,
     feature_extractor,
+    desc: str = "Featurising",
 ):
-    """Cast audio columns, featurise each split, and set torch format."""
-    print("  Featurising splits ...")
-    train_raw = train_raw.cast_column("audio", Audio(sampling_rate=SAMPLING_RATE))
-    val_raw   = val_raw.cast_column("audio", Audio(sampling_rate=SAMPLING_RATE))
-    test_raw  = test_raw.cast_column("audio", Audio(sampling_rate=SAMPLING_RATE))
+    """
+    Cast the audio column, featurise, and set torch format for a single split.
+
+    Called once on the *entire* dataset (see run_all.py) — both the HPO split
+    and every CV fold then select() their rows out of that one featurised
+    dataset by index, instead of each re-running audio feature extraction.
+    """
+    raw_split = raw_split.cast_column("audio", Audio(sampling_rate=SAMPLING_RATE))
 
     labels_are_strings = isinstance(all_labels[0], (str, np.str_))
     min_label = 0 if labels_are_strings else int(min(all_labels))
@@ -215,12 +274,6 @@ def preprocess_splits(
         max_length=MAX_LENGTH,
     )
 
-    def _apply(ds, desc):
-        d = ds.map(fn, batched=True, num_proc=1, remove_columns=ds.column_names, desc=desc)
-        d.set_format("torch")
-        return d
-
-    train_ds = _apply(train_raw, "Train")
-    val_ds   = _apply(val_raw,   "Val  ")
-    test_ds  = _apply(test_raw,  "Test ")
-    return train_ds, val_ds, test_ds
+    d = raw_split.map(fn, batched=True, num_proc=1, remove_columns=raw_split.column_names, desc=desc)
+    d.set_format("torch")
+    return d

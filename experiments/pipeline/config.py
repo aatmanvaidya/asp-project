@@ -21,6 +21,12 @@ HPO_TRIALS = 10  # Optuna trials per experiment (Stage 1 — single GPU only)
 HPO_EPOCHS = 3   # epochs per HPO trial (short, just enough to rank configs)
 SEED       = 42
 
+# Stage 2 evaluates each model/dataset combo with stratified K_FOLDS-fold CV
+# (hyperparameters are still tuned once in Stage 1, not re-tuned per fold) so
+# F1-macro can be reported as mean ± 95% CI across folds instead of a single
+# train/val/test split. The test-set proportion is fixed at 1/K_FOLDS.
+K_FOLDS = 5
+
 # Stage 1 (HPO) always runs on a single GPU, so large train splits (e.g.
 # CAMEO's ~27k samples) make HPO_TRIALS x HPO_EPOCHS passes very slow. Above
 # HPO_SUBSAMPLE_THRESHOLD samples, HPO trials train on a stratified

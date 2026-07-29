@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
 #SBATCH --gres=gpu:4
-#SBATCH --time=8:00:00
+#SBATCH --time=24:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --mail-type=END,FAIL
@@ -90,15 +90,17 @@ fi
 
 echo ""
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 2 — Full training (4-GPU DDP via torchrun)
+# Stage 2 — 5-fold CV training (4-GPU DDP via torchrun)
 #
-# Loads the best_hyperparameters.json saved in Stage 1 for each experiment
-# and trains the final model with early stopping. --skip_done lets you
-# safely re-submit the job if it was interrupted: completed experiments
-# (those with metrics.json) are skipped automatically.
+# Loads the best_hyperparameters.json saved in Stage 1 (tuned once, not
+# re-tuned per fold) and, for each experiment, trains + evaluates 5 fresh
+# models via stratified K-fold CV, reporting F1-macro etc. as mean ± 95% CI
+# across folds. --skip_done lets you safely re-submit the job if it was
+# interrupted: completed folds (fold_*/metrics.json) and completed
+# experiments (cv_metrics.json) are both skipped automatically.
 # ─────────────────────────────────────────────────────────────────────────────
 echo "============================================"
-echo "Stage 2: Full training (4-GPU DDP, torchrun)"
+echo "Stage 2: 5-fold CV training (4-GPU DDP, torchrun)"
 echo "============================================"
 echo ""
 
@@ -109,6 +111,7 @@ torchrun \
     --output_dir "$OUTPUT_DIR" \
     --epochs 30 \
     --batch_size 8 \
+    --k_folds 5 \
     --seed 42 \
     --skip_done
 
