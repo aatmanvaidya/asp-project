@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pipeline.audio_backend  # noqa: F401, E402  (side-effect import — must be first)
 
 import torch  # noqa: E402
+from accelerate import PartialState  # noqa: E402
 
 from pipeline.config import (  # noqa: E402
     BATCH_SIZE,
@@ -118,10 +119,24 @@ def run_experiment(
     # Featurise the whole dataset once; the HPO split and every CV fold below
     # select() their rows out of this by index rather than each re-running
     # audio feature extraction.
+    #
+    # Under DDP, every rank calls run_experiment() independently — without
+    # main_process_first(), all N ranks would run this CPU-bound .map() over
+    # the full dataset concurrently, multiplying host RAM/disk use by N (this
+    # is what caused OOM + "disk quota exceeded" crashes, not GPU memory).
+    # Rank 0 featurises and writes the on-disk cache first; other ranks then
+    # block on a barrier and hit that same cache instead of recomputing.
+    using_ddp = int(os.environ.get("WORLD_SIZE", 1)) > 1
     feature_extractor = load_feature_extractor(hf_model)
-    full_ds = featurise_split(
-        raw[base_split], label_col, all_labels, label2id, feature_extractor, desc="Featurising"
-    )
+    if using_ddp:
+        with PartialState().main_process_first():
+            full_ds = featurise_split(
+                raw[base_split], label_col, all_labels, label2id, feature_extractor, desc="Featurising"
+            )
+    else:
+        full_ds = featurise_split(
+            raw[base_split], label_col, all_labels, label2id, feature_extractor, desc="Featurising"
+        )
 
     # ── Hyperparameter selection ───────────────────────────────────────────────
     # Priority:
@@ -130,7 +145,6 @@ def run_experiment(
     #      single-GPU / non-DDP process) — tuned once, not per CV fold
     #   3. Fall back to the config defaults and persist them for reproducibility
     hpo_params_path = os.path.join(output_dir, "best_hyperparameters.json")
-    using_ddp = int(os.environ.get("WORLD_SIZE", 1)) > 1
     warmup = WARMUP_RATIO
     decay  = WEIGHT_DECAY
 

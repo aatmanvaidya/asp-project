@@ -96,14 +96,20 @@ def build_label_maps(raw, base_split, label_col, all_labels):
 
 
 def _stratify_key(base, all_labels, extra_stratify_col: str | None):
-    """Composite (extra_col, label) stratify key, or label-only if no extra_stratify_col."""
-    strat_key = np.array(list(all_labels), dtype=object)
+    """
+    Composite (extra_col, label) stratify key, or label-only if no extra_stratify_col.
+
+    Labels are kept in their native dtype (not forced to object) when there's no
+    composite key — sklearn's type_of_target() can't classify an object array of
+    numpy int scalars (returns "unknown"), which StratifiedKFold rejects outright
+    even though train_test_split tolerates it.
+    """
     if extra_stratify_col and extra_stratify_col in base.column_names:
         extra_vals = base.with_format("numpy")[extra_stratify_col]
-        strat_key = np.array(
+        return np.array(
             [f"{e}|{l}" for e, l in zip(extra_vals, all_labels)], dtype=object  # noqa: E741
         )
-    return strat_key
+    return np.asarray(all_labels)
 
 
 def split_dataset(raw, base_split, label_col, all_labels, seed: int, extra_stratify_col: str | None = None):
@@ -119,7 +125,7 @@ def split_dataset(raw, base_split, label_col, all_labels, seed: int, extra_strat
     """
     base = raw[base_split]
     idx = np.arange(len(base))
-    label_only = np.array(list(all_labels), dtype=object)
+    label_only = np.asarray(all_labels)
 
     strat_key = _stratify_key(base, all_labels, extra_stratify_col)
     try:
@@ -174,7 +180,7 @@ def kfold_split_dataset(
     """
     base = raw[base_split]
     idx = np.arange(len(base))
-    label_only = np.array(list(all_labels), dtype=object)
+    label_only = np.asarray(all_labels)
 
     strat_key = _stratify_key(base, all_labels, extra_stratify_col)
     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
