@@ -1,7 +1,0 @@
-{
-  "learning_rate": 6.354953232756206e-05,
-  "per_device_train_batch_size": 4,
-  "warmup_ratio": 0.17218720795946393,
-  "weight_decay": 0.03436070627478947,
-  "hpo_objective_f1_macro": 4.270122490291663
-}
