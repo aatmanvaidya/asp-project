@@ -32,6 +32,7 @@ import json
 import os
 import sys
 import traceback
+from datetime import timedelta
 
 # ── Audio backend must be patched before ANY datasets/audio import ─────────────
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -39,6 +40,7 @@ import pipeline.audio_backend  # noqa: F401, E402  (side-effect import — must 
 
 import torch  # noqa: E402
 from accelerate import PartialState  # noqa: E402
+from accelerate.utils import InitProcessGroupKwargs  # noqa: E402
 
 from pipeline.config import (  # noqa: E402
     BATCH_SIZE,
@@ -57,6 +59,7 @@ from pipeline.config import (  # noqa: E402
 )
 from pipeline.data import (  # noqa: E402
     build_label_maps,
+    decode_split,
     featurise_split,
     filter_labels,
     kfold_split_dataset,
@@ -75,6 +78,15 @@ from pipeline.evaluate import (  # noqa: E402
 from pipeline.model import load_feature_extractor, load_model  # noqa: E402
 from pipeline.report import generate_report  # noqa: E402
 from pipeline.trainer_utils import run_hpo, train_model  # noqa: E402
+
+
+# The NCCL default collective timeout (10 min) is too short for the barrier
+# below: decode_split() on a large dataset (e.g. CAMEO) can legitimately take
+# well over 10 minutes on rank 0 while the other ranks wait at the barrier,
+# which was killing the whole job with a ProcessGroupNCCL watchdog timeout
+# rather than just running slowly. Applies only to the first PartialState()
+# call in the process (it's a singleton — later calls reuse the same group).
+_DDP_INIT_KWARGS = InitProcessGroupKwargs(timeout=timedelta(hours=2)).to_kwargs()
 
 
 def _is_main() -> bool:
@@ -116,27 +128,32 @@ def run_experiment(
     # proportions (and thus per-language F1-macro) stay meaningful.
     extra_stratify_col = "language" if dataset_key == "cameo" else None
 
-    # Featurise the whole dataset once; the HPO split and every CV fold below
-    # select() their rows out of this by index rather than each re-running
-    # audio feature extraction.
+    # Decode the whole dataset once (expensive: reads/resamples raw audio) and
+    # featurise it for this model (cheap: per-model normalization only). The
+    # HPO split and every CV fold below select() their rows out of full_ds by
+    # index rather than each re-running audio feature extraction.
+    #
+    # decode_split() doesn't close over anything model-specific, so its HF
+    # datasets cache fingerprint is the same for every model in MODELS — the
+    # first model to run pays for the raw-audio read, every later model for
+    # the same dataset hits the on-disk cache instead of re-decoding.
     #
     # Under DDP, every rank calls run_experiment() independently — without
-    # main_process_first(), all N ranks would run this CPU-bound .map() over
-    # the full dataset concurrently, multiplying host RAM/disk use by N (this
-    # is what caused OOM + "disk quota exceeded" crashes, not GPU memory).
-    # Rank 0 featurises and writes the on-disk cache first; other ranks then
-    # block on a barrier and hit that same cache instead of recomputing.
+    # main_process_first(), all N ranks would run these CPU-bound .map()
+    # calls over the full dataset concurrently, multiplying host RAM/disk use
+    # by N (this is what caused OOM + "disk quota exceeded" crashes, not GPU
+    # memory). Rank 0 runs them and writes the on-disk cache first; other
+    # ranks then block on a barrier and hit that same cache instead of
+    # recomputing.
     using_ddp = int(os.environ.get("WORLD_SIZE", 1)) > 1
     feature_extractor = load_feature_extractor(hf_model)
     if using_ddp:
-        with PartialState().main_process_first():
-            full_ds = featurise_split(
-                raw[base_split], label_col, all_labels, label2id, feature_extractor, desc="Featurising"
-            )
+        with PartialState(**_DDP_INIT_KWARGS).main_process_first():
+            decoded_ds = decode_split(raw[base_split], label_col, all_labels, label2id, desc="Decoding")
+            full_ds = featurise_split(decoded_ds, feature_extractor, desc="Featurising")
     else:
-        full_ds = featurise_split(
-            raw[base_split], label_col, all_labels, label2id, feature_extractor, desc="Featurising"
-        )
+        decoded_ds = decode_split(raw[base_split], label_col, all_labels, label2id, desc="Decoding")
+        full_ds = featurise_split(decoded_ds, feature_extractor, desc="Featurising")
 
     # ── Hyperparameter selection ───────────────────────────────────────────────
     # Priority:

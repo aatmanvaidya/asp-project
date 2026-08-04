@@ -74,9 +74,9 @@ echo "Stage 1: Optuna HPO (1 GPU, 20 trials each)"
 echo "============================================"
 echo ""
 
-CUDA_VISIBLE_DEVICES=0 python "$SCRIPT_DIR/run_all.py" \
+CUDA_VISIBLE_DEVICES=0 uv run "$SCRIPT_DIR/run_all.py" \
     --output_dir "$OUTPUT_DIR" \
-    --hpo_trials 20 \
+    --hpo_trials 10 \
     --hpo_only \
     --seed 42
 
@@ -111,7 +111,7 @@ torchrun \
     "$SCRIPT_DIR/run_all.py" \
     --output_dir "$OUTPUT_DIR" \
     --epochs 30 \
-    --batch_size 8 \
+    --batch_size 32 \
     --k_folds 5 \
     --seed 42 \
     --skip_done

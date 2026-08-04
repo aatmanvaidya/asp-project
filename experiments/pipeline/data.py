@@ -212,16 +212,21 @@ def kfold_split_dataset(
         yield fold_i, train_idx, val_idx, test_idx
 
 
-def _preprocess_batch(
+def _decode_batch(
     batch,
-    feature_extractor,
     label_col: str,
     label2id: dict,
     labels_are_strings: bool,
     min_label: int,
     max_length: int,
 ):
-    all_iv, all_am = [], []
+    """The expensive, I/O-bound half of featurisation: read/resample each audio
+    file and pad/truncate to a fixed length. Deliberately model-independent (no
+    feature_extractor here) so decode_split() below produces the same cache
+    fingerprint for every model — the raw-audio read happens once per dataset,
+    not once per model.
+    """
+    all_arr = []
     for x in batch["audio"]:
         arr = np.array(x["array"], dtype=np.float32)
         arr = (
@@ -229,6 +234,48 @@ def _preprocess_batch(
             if len(arr) >= max_length
             else np.pad(arr, (0, max_length - len(arr)))
         )
+        all_arr.append(arr.tolist())
+
+    if labels_are_strings:
+        labels = [label2id[str(l)] for l in batch[label_col]]  # noqa: E741
+    else:
+        labels = [int(l) - min_label for l in batch[label_col]]  # noqa: E741
+
+    return {"array": all_arr, "labels": labels}
+
+
+def decode_split(raw_split, label_col: str, all_labels, label2id: dict, desc: str = "Decoding"):
+    """
+    Cast the audio column and decode every file to a fixed-length raw array,
+    once per dataset. Called once on the *entire* dataset (see run_all.py) —
+    every model's featurise_split() below, and every CV fold's select(), then
+    reuse this same decoded dataset instead of each re-reading raw audio.
+
+    Because this map() call's function+args don't depend on which model will
+    consume the output, calling it again for a different model in the same
+    run hits HF datasets' on-disk cache instead of re-decoding from scratch.
+    """
+    raw_split = raw_split.cast_column("audio", Audio(sampling_rate=SAMPLING_RATE))
+
+    labels_are_strings = isinstance(all_labels[0], (str, np.str_))
+    min_label = 0 if labels_are_strings else int(min(all_labels))
+
+    fn = functools.partial(
+        _decode_batch,
+        label_col=label_col,
+        label2id=label2id,
+        labels_are_strings=labels_are_strings,
+        min_label=min_label,
+        max_length=MAX_LENGTH,
+    )
+
+    return raw_split.map(fn, batched=True, num_proc=1, remove_columns=raw_split.column_names, desc=desc)
+
+
+def _featurise_batch(batch, feature_extractor):
+    all_iv, all_am = [], []
+    for arr in batch["array"]:
+        arr = np.asarray(arr, dtype=np.float32)
         out = feature_extractor(
             arr,
             sampling_rate=SAMPLING_RATE,
@@ -237,49 +284,20 @@ def _preprocess_batch(
         )
         iv = np.array(out["input_values"], dtype=np.float32).squeeze()
         # Some extractors omit attention_mask; default to all-ones
-        raw_am = out.get("attention_mask", np.ones(max_length, dtype=np.int64))
+        raw_am = out.get("attention_mask", np.ones(len(arr), dtype=np.int64))
         am = np.array(raw_am, dtype=np.int64).squeeze()
         all_iv.append(iv.tolist())
         all_am.append(am.tolist())
-
-    if labels_are_strings:
-        labels = [label2id[str(l)] for l in batch[label_col]]  # noqa: E741
-    else:
-        labels = [int(l) - min_label for l in batch[label_col]]  # noqa: E741
-
-    return {"input_values": all_iv, "attention_mask": all_am, "labels": labels}
+    return {"input_values": all_iv, "attention_mask": all_am, "labels": batch["labels"]}
 
 
-def featurise_split(
-    raw_split,
-    label_col: str,
-    all_labels,
-    label2id: dict,
-    feature_extractor,
-    desc: str = "Featurising",
-):
+def featurise_split(decoded_split, feature_extractor, desc: str = "Featurising"):
     """
-    Cast the audio column, featurise, and set torch format for a single split.
-
-    Called once on the *entire* dataset (see run_all.py) — both the HPO split
-    and every CV fold then select() their rows out of that one featurised
-    dataset by index, instead of each re-running audio feature extraction.
+    Apply a model's feature extractor to an already-decoded split (see
+    decode_split()). Cheap relative to decoding — no file I/O, just per-model
+    normalization — so redoing this once per model is fine.
     """
-    raw_split = raw_split.cast_column("audio", Audio(sampling_rate=SAMPLING_RATE))
-
-    labels_are_strings = isinstance(all_labels[0], (str, np.str_))
-    min_label = 0 if labels_are_strings else int(min(all_labels))
-
-    fn = functools.partial(
-        _preprocess_batch,
-        feature_extractor=feature_extractor,
-        label_col=label_col,
-        label2id=label2id,
-        labels_are_strings=labels_are_strings,
-        min_label=min_label,
-        max_length=MAX_LENGTH,
-    )
-
-    d = raw_split.map(fn, batched=True, num_proc=1, remove_columns=raw_split.column_names, desc=desc)
+    fn = functools.partial(_featurise_batch, feature_extractor=feature_extractor)
+    d = decoded_split.map(fn, batched=True, num_proc=1, remove_columns=["array"], desc=desc)
     d.set_format("torch")
     return d
