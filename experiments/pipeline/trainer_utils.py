@@ -48,7 +48,6 @@ def run_hpo(
 ) -> dict:
     """
     Optuna hyperparameter search via Trainer.hyperparameter_search().
-    Only call from the main process; not compatible with DDP.
     """
     import optuna
     from .model import load_model

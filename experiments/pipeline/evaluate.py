@@ -16,7 +16,7 @@ from sklearn.metrics import (
 
 
 def run_inference(trainer, test_ds):
-    """Run prediction on test_ds from all DDP ranks; returns PredictionOutput."""
+    """Run prediction on test_ds; returns PredictionOutput."""
     return trainer.predict(test_ds)
 
 
@@ -139,7 +139,7 @@ def save_results(
 ) -> dict:
     """
     Compute and persist test metrics, predictions CSV, confusion matrix, and
-    training curves. Should only be called from the main (rank-0) process.
+    training curves.
     """
     preds  = np.argmax(pred_output.predictions, axis=-1)
     labels = pred_output.label_ids

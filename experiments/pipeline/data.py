@@ -7,6 +7,7 @@ from sklearn.model_selection import StratifiedKFold, train_test_split
 
 from .config import (
     MAX_LENGTH,
+    PREPROCESS_BATCH_SIZE,
     RAVDESS_EMOTION_NAMES,
     SAMPLING_RATE,
     TEST_RATIO,
@@ -229,6 +230,10 @@ def _decode_batch(
     all_arr = []
     for x in batch["audio"]:
         arr = np.array(x["array"], dtype=np.float32)
+        if arr.ndim > 1:
+            # Some CAMEO sub-corpora ship stereo audio — downmix to mono
+            # before pad/truncate, which assumes a 1-D array.
+            arr = arr.mean(axis=1)
         arr = (
             arr[:max_length]
             if len(arr) >= max_length
@@ -269,7 +274,14 @@ def decode_split(raw_split, label_col: str, all_labels, label2id: dict, desc: st
         max_length=MAX_LENGTH,
     )
 
-    return raw_split.map(fn, batched=True, num_proc=1, remove_columns=raw_split.column_names, desc=desc)
+    return raw_split.map(
+        fn,
+        batched=True,
+        batch_size=PREPROCESS_BATCH_SIZE,
+        num_proc=1,
+        remove_columns=raw_split.column_names,
+        desc=desc,
+    )
 
 
 def _featurise_batch(batch, feature_extractor):
@@ -298,6 +310,13 @@ def featurise_split(decoded_split, feature_extractor, desc: str = "Featurising")
     normalization — so redoing this once per model is fine.
     """
     fn = functools.partial(_featurise_batch, feature_extractor=feature_extractor)
-    d = decoded_split.map(fn, batched=True, num_proc=1, remove_columns=["array"], desc=desc)
+    d = decoded_split.map(
+        fn,
+        batched=True,
+        batch_size=PREPROCESS_BATCH_SIZE,
+        num_proc=1,
+        remove_columns=["array"],
+        desc=desc,
+    )
     d.set_format("torch")
     return d

@@ -4,7 +4,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
-#SBATCH --gres=gpu:4
+#SBATCH --gres=gpu:1
 #SBATCH --mem=0
 #SBATCH --time=36:00:00
 #SBATCH --output=logs/%x_%j.out
@@ -91,7 +91,7 @@ fi
 
 echo ""
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 2 — 5-fold CV training (4-GPU DDP via torchrun)
+# Stage 2 — 5-fold CV training (single GPU)
 #
 # Loads the best_hyperparameters.json saved in Stage 1 (tuned once, not
 # re-tuned per fold) and, for each experiment, trains + evaluates 5 fresh
@@ -101,14 +101,11 @@ echo ""
 # experiments (cv_metrics.json) are both skipped automatically.
 # ─────────────────────────────────────────────────────────────────────────────
 echo "============================================"
-echo "Stage 2: 5-fold CV training (4-GPU DDP, torchrun)"
+echo "Stage 2: 5-fold CV training (1 GPU)"
 echo "============================================"
 echo ""
 
-torchrun \
-    --standalone \
-    --nproc_per_node=4 \
-    "$SCRIPT_DIR/run_all.py" \
+CUDA_VISIBLE_DEVICES=0 uv run "$SCRIPT_DIR/run_all.py" \
     --output_dir "$OUTPUT_DIR" \
     --epochs 30 \
     --batch_size 32 \

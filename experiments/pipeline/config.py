@@ -10,6 +10,12 @@ TEST_RATIO  = 0.15
 
 BATCH_SIZE    = 8
 NUM_EPOCHS    = 30
+# datasets.map() batch size during decode/featurise — kept small because raw
+# audio arrays are fully decoded (at their native duration) before truncation
+# to MAX_LENGTH, and the datasets default of 1000 means up to 1000 full-length
+# decoded arrays sit in memory at once. This is what OOM'd on CAMEO, whose
+# clips run up to ~20s (vs. MAX_DURATION's 5s cap applied only after decode).
+PREPROCESS_BATCH_SIZE = 16
 LEARNING_RATE = 3e-5
 WEIGHT_DECAY  = 0.01
 WARMUP_RATIO  = 0.1
