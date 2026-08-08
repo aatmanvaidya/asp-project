@@ -62,7 +62,7 @@ def run_hpo(
     def hp_space(trial):
         return {
             "learning_rate":               trial.suggest_float("learning_rate", 1e-5, 5e-4, log=True),
-            "per_device_train_batch_size": trial.suggest_categorical("per_device_train_batch_size", [4, 8, 16]),
+            "per_device_train_batch_size": trial.suggest_categorical("per_device_train_batch_size", [8, 16, 32]),
             "warmup_ratio":                trial.suggest_float("warmup_ratio", 0.0, 0.2),
             "weight_decay":                trial.suggest_float("weight_decay", 0.0, 0.1),
         }
@@ -76,7 +76,8 @@ def run_hpo(
         metric_for_best_model="f1_macro",
         greater_is_better=True,
         fp16=torch.cuda.is_available(),
-        dataloader_num_workers=4,
+        dataloader_num_workers=8,
+        dataloader_persistent_workers=True,
         report_to="none",
         seed=SEED,
     )
@@ -130,7 +131,10 @@ def train_model(
         output_dir=output_dir,
         num_train_epochs=epochs,
         per_device_train_batch_size=batch_size,
-        per_device_eval_batch_size=batch_size,
+        # Eval has no backward pass / no optimizer state, so it's much cheaper
+        # per sample than training — use a bigger eval batch to cut down the
+        # wall-clock cost of the per-epoch eval pass that early stopping needs.
+        per_device_eval_batch_size=min(batch_size * 4, 64),
         eval_strategy="epoch",
         save_strategy="best",
         save_total_limit=1,
@@ -142,7 +146,8 @@ def train_model(
         weight_decay=weight_decay,
         logging_steps=10,
         fp16=torch.cuda.is_available(),
-        dataloader_num_workers=4,
+        dataloader_num_workers=8,
+        dataloader_persistent_workers=True,
         report_to="none",
         seed=SEED,
     )
