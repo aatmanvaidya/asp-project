@@ -1,0 +1,66 @@
+{
+  "Bengali": {
+    "n_samples": 1400,
+    "accuracy": 0.9492857142857143,
+    "f1_macro": 0.9484193824807801,
+    "f1_weighted": 0.9484193824807803,
+    "precision_macro": 0.9513690753574872,
+    "recall_macro": 0.9492857142857144
+  },
+  "English": {
+    "n_samples": 2363,
+    "accuracy": 0.770207363520948,
+    "f1_macro": 0.778900720016358,
+    "f1_weighted": 0.7662629717823127,
+    "precision_macro": 0.7897201645062576,
+    "recall_macro": 0.7806630972834424
+  },
+  "French": {
+    "n_samples": 288,
+    "accuracy": 0.7604166666666666,
+    "f1_macro": 0.7608299939266026,
+    "f1_weighted": 0.7584755298716384,
+    "precision_macro": 0.7699741175524181,
+    "recall_macro": 0.7611425119730767
+  },
+  "German": {
+    "n_samples": 973,
+    "accuracy": 0.9938335046248715,
+    "f1_macro": 0.9898042184373499,
+    "f1_weighted": 0.9938197682122761,
+    "precision_macro": 0.9905769867568279,
+    "recall_macro": 0.9890764957264957
+  },
+  "Italian": {
+    "n_samples": 1380,
+    "accuracy": 0.7652173913043478,
+    "f1_macro": 0.7645328162646257,
+    "f1_weighted": 0.7645198697794099,
+    "precision_macro": 0.7702014952672319,
+    "recall_macro": 0.765157008811831
+  },
+  "Polish": {
+    "n_samples": 896,
+    "accuracy": 0.9319196428571429,
+    "f1_macro": 0.9304158104978093,
+    "f1_weighted": 0.9318443529341973,
+    "precision_macro": 0.9326111661530678,
+    "recall_macro": 0.9297336414629648
+  },
+  "Russian": {
+    "n_samples": 240,
+    "accuracy": 0.5625,
+    "f1_macro": 0.47506950009811755,
+    "f1_weighted": 0.5606440474498338,
+    "precision_macro": 0.5096310715609936,
+    "recall_macro": 0.4760750155486998
+  },
+  "Spanish": {
+    "n_samples": 173,
+    "accuracy": 0.7514450867052023,
+    "f1_macro": 0.6478107963589782,
+    "f1_weighted": 0.7554791870126027,
+    "precision_macro": 0.6616670549860205,
+    "recall_macro": 0.644088669950739
+  }
+}

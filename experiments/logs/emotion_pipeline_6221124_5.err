@@ -1,0 +1,2 @@
+error: Failed to query Python interpreter
+  Caused by: failed to write to file `/home/tu/tu_tu/tu_zxord71/.cache/uv/.tmpO15dYi/python/get_interpreter_info.py`: Disk quota exceeded (os error 122)

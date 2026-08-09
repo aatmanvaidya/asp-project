@@ -1,0 +1,82 @@
+============================================
+Emotion Recognition Pipeline
+============================================
+Array Job : 6221124_2
+Node      : uc2n903
+Model     : wavlm-large
+Start time: Sun Aug  9 10:38:48 AM CEST 2026
+
+Loading modules...
+CUDA Home : /opt/bwhpc/common/devel/cuda/12.8
+Python    : /opt/bwhpc/common/devel/python/3.13.3_llvm_19.1/bin/python
+
+Setting up project environment...
+Python isolation enforced:
+  PYTHONNOUSERSITE=1
+  VIRTUAL_ENV=/home/tu/tu_tu/tu_zxord71/asp-project/.venv
+  Python used: /home/tu/tu_tu/tu_zxord71/asp-project/.venv/bin/python
+
+GPU info:
+0, NVIDIA A100 80GB PCIe, 81920 MiB, 81127 MiB
+
+============================================
+Stage 1: Optuna HPO (wavlm-large, 1 GPU, 10 trials each)
+============================================
+
+======================================================================
+Emotion Recognition Pipeline  [Stage 1 — HPO only]
+======================================================================
+Device    : cuda
+Models    : ['wavlm-large']
+Datasets  : ['ravdess', 'emodb', 'cameo']
+HPO trials: 10  |  Seed: 42
+Output    : /home/tu/tu_tu/tu_zxord71/asp-project/outputs
+======================================================================
+
+======================================================================
+[1/3]  wavlm-large_ravdess
+  Model  : microsoft/wavlm-large
+  Dataset: xbgoose/ravdess
+  Output : /home/tu/tu_tu/tu_zxord71/asp-project/outputs/wavlm-large_ravdess
+
+  Loading: xbgoose/ravdess
+  Label col : emotion
+  Samples   : 1,440  |  Classes: 8
+    angry: 192
+    calm: 192
+    disgust: 192
+    fearful: 192
+    happy: 192
+    neutral: 96
+    sad: 192
+    surprised: 192
+  Classes   : ['angry', 'calm', 'disgust', 'fearful', 'happy', 'neutral', 'sad', 'surprised']
+  Feature extractor : Wav2Vec2FeatureExtractor  (sr=16000)
+  Split     : 1,008 train / 216 val / 216 test  (of 1,440)
+  Model             : WavLMForSequenceClassification  (315,717,576 params, 315,717,576 trainable)
+  HPO: 10 trials × 3 epochs ...
+  Model             : WavLMForSequenceClassification  (315,717,576 params, 315,717,576 trainable)
+{'eval_loss': 1.32928466796875, 'eval_f1_macro': 0.4576301039464721, 'eval_f1_weighted': 0.48761052148227635, 'eval_precision_macro': 0.5166811258916522, 'eval_recall_macro': 0.499384236453202, 'eval_accuracy': 0.5324074074074074, 'eval_runtime': 11.5005, 'eval_samples_per_second': 18.782, 'eval_steps_per_second': 2.348, 'epoch': 1.0}
+{'eval_loss': 0.8065489530563354, 'eval_f1_macro': 0.7433037176801459, 'eval_f1_weighted': 0.7557774968743414, 'eval_precision_macro': 0.7527284712067321, 'eval_recall_macro': 0.741851395730706, 'eval_accuracy': 0.7546296296296297, 'eval_runtime': 1.0788, 'eval_samples_per_second': 200.224, 'eval_steps_per_second': 25.028, 'epoch': 2.0}
+{'eval_loss': 0.6077738404273987, 'eval_f1_macro': 0.8038167474727487, 'eval_f1_weighted': 0.8209110962279302, 'eval_precision_macro': 0.8128526668918771, 'eval_recall_macro': 0.8099548440065681, 'eval_accuracy': 0.8148148148148148, 'eval_runtime': 1.0927, 'eval_samples_per_second': 197.668, 'eval_steps_per_second': 24.709, 'epoch': 3.0}
+{'train_runtime': 103.5083, 'train_samples_per_second': 29.215, 'train_steps_per_second': 3.652, 'train_loss': 1.1066871118293238, 'epoch': 3.0}
+  Model             : WavLMForSequenceClassification  (315,717,576 params, 315,717,576 trainable)
+
+Stage 1 exit code: 120
+Stage 1 (HPO) failed. Aborting.
+
+============================= JOB FEEDBACK =============================
+
+NodeName=uc2n903
+Job ID: 6226236
+Array Job ID: 6221124_2
+Cluster: uc3
+User/Group: tu_zxord71/tu_tu
+State: FAILED (exit code 120)
+Nodes: 1
+Cores per node: 32
+CPU Utilized: 00:02:13
+CPU Efficiency: 1.14% of 03:15:12 core-walltime
+Job Wall-clock time: 00:06:06
+Memory Utilized: 5.41 GB
+Memory Efficiency: 1.09% of 498.05 GB (498.05 GB/node)
