@@ -7,30 +7,23 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=0
 #SBATCH --time=48:00:00
-#SBATCH --array=0-6
-#SBATCH --output=logs/%x_%A_%a.out
-#SBATCH --error=logs/%x_%A_%a.err
+#SBATCH --output=logs/%x_%j.out
+#SBATCH --error=logs/%x_%j.err
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=aatman-vrundavan.vaidya@student.uni-tuebingen.de
 
-# One array task per model, each on its own single A100, all writing under
-# the same outputs/ dir. Keep --array=0-N above in sync with (length - 1) of
-# this list.
-MODELS=(
-    wav2vec2-base
-    hubert-xlarge
-    wavlm-large
-    distilhubert
-    hubert-base
-    wavlm-base
-    wav2vec2-large
-)
-MODEL="${MODELS[$SLURM_ARRAY_TASK_ID]}"
+# MODEL is passed in per submission, e.g.:
+#   sbatch --export=ALL,MODEL=wav2vec2-base experiments/run_pipeline.sh
+# Submit one such job per model to run them one at a time / independently.
+if [ -z "$MODEL" ]; then
+    echo "MODEL is not set. Submit with: sbatch --export=ALL,MODEL=<model_name> experiments/run_pipeline.sh"
+    exit 1
+fi
 
 echo "============================================"
 echo "Emotion Recognition Pipeline"
 echo "============================================"
-echo "Array Job : ${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
+echo "Job ID    : $SLURM_JOB_ID"
 echo "Node      : $SLURM_NODELIST"
 echo "Model     : $MODEL"
 echo "Start time: $(date)"
@@ -147,9 +140,9 @@ if [ $STAGE2_EXIT -eq 0 ]; then
     ls -lh "$OUTPUT_DIR"
     echo ""
     if [ -f "$OUTPUT_DIR/report.md" ]; then
-        echo "=== report.md (partial — this task's model ($MODEL) only;"
-        echo "    every array task overwrites this file, so it does NOT"
-        echo "    accumulate across tasks. Once ALL array tasks finish,"
+        echo "=== report.md (partial — this job's model ($MODEL) only;"
+        echo "    every job overwrites this file, so it does NOT"
+        echo "    accumulate across jobs. Once ALL model jobs finish,"
         echo "    run this once (no --models filter) to regenerate the"
         echo "    full report from every completed cv_metrics.json:"
         echo "      uv run \"$SCRIPT_DIR/run_all.py\" --output_dir \"$OUTPUT_DIR\" --skip_done"
@@ -157,7 +150,7 @@ if [ $STAGE2_EXIT -eq 0 ]; then
     fi
 else
     echo "Failure: Stage 2 exited with code $STAGE2_EXIT"
-    echo "Check logs: logs/${SLURM_JOB_NAME}_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}.err"
+    echo "Check logs: logs/${SLURM_JOB_NAME}_${SLURM_JOB_ID}.err"
 fi
 
 exit $STAGE2_EXIT
