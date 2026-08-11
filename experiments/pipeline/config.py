@@ -10,9 +10,11 @@ TEST_RATIO  = 0.15
 
 BATCH_SIZE    = 8
 NUM_EPOCHS    = 30
-# datasets.map() batch size during feature extraction — kept small because raw
-# audio arrays are fully decoded before truncation to MAX_LENGTH, and a large
-# batch (the datasets default is 1000) can OOM on bigger splits like CAMEO.
+# datasets.map() batch size during decode/featurise — kept small because raw
+# audio arrays are fully decoded (at their native duration) before truncation
+# to MAX_LENGTH, and the datasets default of 1000 means up to 1000 full-length
+# decoded arrays sit in memory at once. This is what OOM'd on CAMEO, whose
+# clips run up to ~20s (vs. MAX_DURATION's 5s cap applied only after decode).
 PREPROCESS_BATCH_SIZE = 16
 LEARNING_RATE = 3e-5
 WEIGHT_DECAY  = 0.01
@@ -23,18 +25,21 @@ EARLY_STOPPING_THRESHOLD = 0.001
 
 HPO_TRIALS = 10  # Optuna trials per experiment (Stage 1 — single GPU only)
 HPO_EPOCHS = 3   # epochs per HPO trial (short, just enough to rank configs)
-
-# Large training sets (e.g. CAMEO's ~27k merged examples) make a full HPO
-# trial take ~40min regardless of batch size, so 20 trials x 3 epochs is
-# multiple GPU-days. Above this many train examples, HPO runs on a random
-# subsample with fewer trials/epochs — Stage 2 training still uses 100% of
-# the data, only hyperparameter search is shrunk.
-HPO_LARGE_DATASET_THRESHOLD = 10_000
-HPO_SUBSAMPLE_FRAC = 0.15
-HPO_TRIALS_LARGE   = 8
-HPO_EPOCHS_LARGE   = 2
-
 SEED       = 42
+
+# Stage 2 evaluates each model/dataset combo with stratified K_FOLDS-fold CV
+# (hyperparameters are still tuned once in Stage 1, not re-tuned per fold) so
+# F1-macro can be reported as mean ± 95% CI across folds instead of a single
+# train/val/test split. The test-set proportion is fixed at 1/K_FOLDS.
+K_FOLDS = 5
+
+# Stage 1 (HPO) always runs on a single GPU, so large train splits (e.g.
+# CAMEO's ~27k samples) make HPO_TRIALS x HPO_EPOCHS passes very slow. Above
+# HPO_SUBSAMPLE_THRESHOLD samples, HPO trials train on a stratified
+# HPO_SUBSAMPLE_FRACTION subsample instead of the full train split — this only
+# affects which config Optuna picks, not the final Stage-2 training data.
+HPO_SUBSAMPLE_THRESHOLD = 5_000
+HPO_SUBSAMPLE_FRACTION  = 0.20
 
 MODELS: dict[str, str] = {
     "wav2vec2-base":    "facebook/wav2vec2-base",
@@ -52,32 +57,18 @@ DATASETS: dict[str, str] = {
     "cameo":   "amu-cai/CAMEO",
 }
 
-# Canonical emotion labels after CAMEO harmonization
-CAMEO_CANONICAL_LABELS = [
-    "anger", "disgust", "fear", "happiness", "neutral", "sadness", "surprise"
-]
-
-CAMEO_LABEL_ALIASES: dict[str, str | None] = {
-    "angry": "anger",
-    "happy": "happiness",
-    "joy": "happiness",
-    "sad": "sadness",
-    "fearful": "fear",
-    "scared": "fear",
-    "surprised": "surprise",
-    # drop non-standard emotions
-    "calm": None,
-    "contempt": None,
-    "boredom": None,
-    "bored": None,
-    "enthusiasm": None,
-    "excited": None,
-    "poker": None,
-    "amused": None,
-    "sleepy": None,
-}
-
 # Used when RAVDESS labels are integer-encoded and dataset lacks ClassLabel names
 RAVDESS_EMOTION_NAMES = [
     "neutral", "calm", "happy", "sad", "angry", "fearful", "disgust", "surprised",
 ]
+
+# CAMEO spans 13 sub-corpora whose emotion vocabularies only partially overlap
+# (e.g. "poker" only in German/PAVOQUE, "sarcasm"/"excitement" only in
+# English/EMNS, "anxiety"/"apology"/"assertiveness"/"concern"/"encouragement"
+# only in English/JL-Corpus, "enthusiasm" only in Russian/RESD, "calm" only in
+# RAVDESS). We restrict to the emotions common across most sub-corpora so the
+# label space is meaningful in every language; samples with any other emotion
+# are dropped.
+CAMEO_CORE_EMOTIONS = {
+    "anger", "disgust", "fear", "happiness", "neutral", "sadness", "surprise",
+}

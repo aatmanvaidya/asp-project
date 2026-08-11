@@ -39,6 +39,10 @@ def _decode_soundfile(self, value, token_per_repo_id=None):
     target_sr = self.sampling_rate
     if target_sr and sr != target_sr:
         import librosa
+        # axis=0 is required for multi-channel files (some CAMEO sub-corpora
+        # ship stereo audio) — librosa's default axis=-1 would resample along
+        # the channel axis instead of the time axis for a (samples, channels)
+        # array.
         array = librosa.resample(array, orig_sr=sr, target_sr=target_sr, axis=0)
         sr = target_sr
     return {"path": path or "", "array": array.astype(np.float32), "sampling_rate": sr}

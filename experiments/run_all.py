@@ -1,39 +1,37 @@
 """
 Emotion recognition pipeline — runs all model × dataset combinations.
+Single GPU throughout — no DDP/torchrun.
 
 Two-stage workflow (see run_pipeline.sh):
 
-  Stage 1 — HPO (single GPU, Optuna finds best hyperparameters per experiment):
+  Stage 1 — HPO (Optuna finds best hyperparameters per experiment, tuned once
+    on a single held-out split — not re-tuned per CV fold):
     python experiments/run_all.py --hpo_trials 20 --hpo_only
 
-  Stage 2 — Full training (4-GPU DDP, loads Stage-1 hyperparameters):
-    torchrun --standalone --nproc_per_node=4 experiments/run_all.py --skip_done
+  Stage 2 — K_FOLDS-fold CV training (loads Stage-1 hyperparameters,
+    trains+evaluates K_FOLDS fresh models, and reports F1-macro etc. as
+    mean ± 95% CI across folds):
+    python experiments/run_all.py --skip_done
 
-Single-GPU end-to-end (HPO + training in one go):
+Single-GPU end-to-end (HPO + CV training in one go):
     python experiments/run_all.py --hpo_trials 20
 
-Include MFCC baseline (runs on CPU, no HPO needed):
-    python experiments/run_all.py --include_mfcc --datasets ravdess cameo
-
 Additional flags:
-    --output_dir   outputs/         root directory for all experiment outputs
-    --epochs       30               max training epochs (early stopping may stop sooner)
-    --mfcc_epochs  50               epochs for the MFCC CNN baseline
-    --batch_size   8
-    --lr           3e-5
-    --seed         42
-    --models       wav2vec2-base …  subset of models to run (default: all)
-    --datasets     ravdess cameo …  subset of datasets to run (default: all)
-    --skip_done                     skip experiments that already have metrics.json
-    --hpo_only                      run HPO only, save best_hyperparameters.json, skip training
-    --include_mfcc                  also run the MFCC + 1D CNN baseline for each dataset
+    --output_dir  outputs/         root directory for all experiment outputs
+    --epochs      30               max training epochs per fold (early stopping may stop sooner)
+    --batch_size  8
+    --lr          3e-5
+    --seed        42
+    --k_folds     5                number of stratified CV folds in Stage 2
+    --models      wav2vec2-base …  subset of models to run (default: all)
+    --datasets    ravdess emodb    subset of datasets to run (default: all)
+    --skip_done                    skip already-completed folds/experiments (cv_metrics.json / fold_*/metrics.json)
+    --hpo_only                     run HPO only, save best_hyperparameters.json, skip training
 """
 import argparse
 import json
 import os
-import shutil
 import sys
-import time
 import traceback
 
 # ── Audio backend must be patched before ANY datasets/audio import ─────────────
@@ -41,17 +39,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pipeline.audio_backend  # noqa: F401, E402  (side-effect import — must be first)
 
 import torch  # noqa: E402
-from datasets import load_from_disk  # noqa: E402
 
 from pipeline.config import (  # noqa: E402
     BATCH_SIZE,
+    CAMEO_CORE_EMOTIONS,
     DATASETS,
-    HPO_EPOCHS,
-    HPO_EPOCHS_LARGE,
-    HPO_LARGE_DATASET_THRESHOLD,
-    HPO_SUBSAMPLE_FRAC,
+    HPO_SUBSAMPLE_FRACTION,
+    HPO_SUBSAMPLE_THRESHOLD,
     HPO_TRIALS,
-    HPO_TRIALS_LARGE,
+    K_FOLDS,
     LEARNING_RATE,
     MODELS,
     NUM_EPOCHS,
@@ -61,121 +57,25 @@ from pipeline.config import (  # noqa: E402
 )
 from pipeline.data import (  # noqa: E402
     build_label_maps,
+    decode_split,
+    featurise_split,
+    filter_labels,
+    kfold_split_dataset,
     load_dataset_hf,
-    preprocess_splits,
     split_dataset,
+    subsample_for_hpo,
 )
-from pipeline.evaluate import run_inference, save_results, save_training_curves  # noqa: E402
+from pipeline.evaluate import (  # noqa: E402
+    aggregate_cv_language_metrics,
+    aggregate_cv_metrics,
+    load_cv_metrics,
+    run_inference,
+    save_results,
+    save_training_curves,
+)
 from pipeline.model import load_feature_extractor, load_model  # noqa: E402
 from pipeline.report import generate_report  # noqa: E402
 from pipeline.trainer_utils import run_hpo, train_model  # noqa: E402
-
-# Root of the repository (one level above experiments/)
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-def _is_main() -> bool:
-    """True on rank 0 and when not running under torchrun."""
-    return int(os.environ.get("LOCAL_RANK", -1)) <= 0
-
-
-def _wait_for_file(path: str, poll_seconds: float = 5.0, timeout_seconds: float = 3600.0) -> None:
-    """Block until `path` exists, raising if the main rank never produces it."""
-    waited = 0.0
-    while not os.path.exists(path):
-        time.sleep(poll_seconds)
-        waited += poll_seconds
-        if waited >= timeout_seconds:
-            raise TimeoutError(f"Timed out after {timeout_seconds:.0f}s waiting for {path}")
-
-
-def _load_or_build_splits(hf_model: str, hf_dataset: str, seed: int, output_dir: str):
-    """Build train/val/test feature datasets once, cached under output_dir.
-
-    Under DDP (torchrun) every rank imports and calls this function, but only
-    rank 0 downloads/decodes/feature-extracts the raw audio — that pipeline is
-    expensive enough that doing it redundantly on all ranks at once has caused
-    the whole node to OOM. Other ranks wait for the cache and load it from
-    disk instead. This also means Stage 1 (single-GPU) primes the cache that
-    Stage 2 (4-GPU DDP) then reuses almost for free.
-    """
-    cache_dir     = os.path.join(output_dir, "_features")
-    ready_marker  = os.path.join(cache_dir, "READY")
-    label_map_path = os.path.join(cache_dir, "label_maps.json")
-
-    if _is_main() and not os.path.exists(ready_marker):
-        # Clear out any partial cache left by a job that died mid-write.
-        if os.path.exists(cache_dir):
-            shutil.rmtree(cache_dir)
-        raw, base_split, label_col, all_labels = load_dataset_hf(hf_dataset)
-        label_names, id2label, label2id, num_labels = build_label_maps(
-            raw, base_split, label_col, all_labels
-        )
-        train_raw, val_raw, test_raw = split_dataset(raw, base_split, label_col, all_labels, seed)
-        feature_extractor = load_feature_extractor(hf_model)
-        train_ds, val_ds, test_ds = preprocess_splits(
-            train_raw, val_raw, test_raw, label_col, all_labels, label2id, feature_extractor
-        )
-
-        os.makedirs(cache_dir, exist_ok=True)
-        train_ds.save_to_disk(os.path.join(cache_dir, "train"))
-        val_ds.save_to_disk(os.path.join(cache_dir, "val"))
-        test_ds.save_to_disk(os.path.join(cache_dir, "test"))
-        test_raw.save_to_disk(os.path.join(cache_dir, "test_raw"))
-        with open(label_map_path, "w") as f:
-            json.dump({"id2label": id2label, "label2id": label2id, "num_labels": num_labels}, f)
-        # Written last: its existence is the signal to other ranks that the cache is complete.
-        with open(ready_marker, "w") as f:
-            f.write("ok")
-
-    elif not _is_main():
-        _wait_for_file(ready_marker)
-
-    train_ds = load_from_disk(os.path.join(cache_dir, "train")).with_format("torch")
-    val_ds   = load_from_disk(os.path.join(cache_dir, "val")).with_format("torch")
-    test_ds  = load_from_disk(os.path.join(cache_dir, "test")).with_format("torch")
-    test_raw = load_from_disk(os.path.join(cache_dir, "test_raw"))
-    with open(label_map_path) as f:
-        maps = json.load(f)
-    id2label   = {int(k): v for k, v in maps["id2label"].items()}
-    label2id   = maps["label2id"]
-    num_labels = maps["num_labels"]
-    return train_ds, val_ds, test_ds, test_raw, id2label, label2id, num_labels
-
-
-def run_mfcc_experiment(
-    dataset_key: str,
-    output_dir: str,
-    epochs: int = 50,
-    seed: int = SEED,
-) -> dict:
-    """Run the MFCC + 1D CNN baseline for a given dataset.
-
-    Uses data/<dataset_key>.py to load raw audio records, then calls
-    baselines/train.py:run() to train and evaluate.  Results (metrics.json,
-    confusion_matrix.png, etc.) are written to output_dir.
-    """
-    import importlib
-
-    sys.path.insert(0, _REPO_ROOT)
-
-    data_module = importlib.import_module(f"data.{dataset_key}")
-    print(f"\n  Loading {dataset_key} records for MFCC baseline ...")
-    records = data_module.load()
-
-    from baselines.features import build_feature_matrix  # noqa: E402
-    import baselines.train as mfcc_train  # noqa: E402
-
-    print(f"  Extracting MFCC features for {len(records):,} samples ...")
-    X, y, label_names = build_feature_matrix(records)
-
-    print(f"  Training MFCC CNN for {epochs} epochs ...")
-    metrics = mfcc_train.run(
-        X, y, label_names,
-        epochs=epochs,
-        output_dir=output_dir,
-    )
-    return metrics or {}
 
 
 def run_experiment(
@@ -188,25 +88,48 @@ def run_experiment(
     batch_size: int = BATCH_SIZE,
     epochs: int     = NUM_EPOCHS,
     hpo_trials: int = HPO_TRIALS,
+    k_folds: int    = K_FOLDS,
     seed: int       = SEED,
     hpo_only: bool  = False,
+    skip_done: bool = False,
 ) -> dict:
-    main = _is_main()
-    if main:
-        os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
 
     # ── Data ──────────────────────────────────────────────────────────────────
-    train_ds, val_ds, test_ds, test_raw, id2label, label2id, num_labels = _load_or_build_splits(
-        hf_model, hf_dataset, seed, output_dir
+    raw, base_split, label_col, all_labels = load_dataset_hf(hf_dataset)
+
+    # CAMEO spans 13 sub-corpora with only partially overlapping emotion
+    # vocabularies — restrict to the shared core emotions (see config.py).
+    if dataset_key == "cameo":
+        raw, all_labels = filter_labels(raw, base_split, label_col, CAMEO_CORE_EMOTIONS)
+
+    label_names, id2label, label2id, num_labels = build_label_maps(
+        raw, base_split, label_col, all_labels
     )
+    # CAMEO also gets language-aware stratification so per-language test
+    # proportions (and thus per-language F1-macro) stay meaningful.
+    extra_stratify_col = "language" if dataset_key == "cameo" else None
+
+    # Decode the whole dataset once (expensive: reads/resamples raw audio) and
+    # featurise it for this model (cheap: per-model normalization only). The
+    # HPO split and every CV fold below select() their rows out of full_ds by
+    # index rather than each re-running audio feature extraction.
+    #
+    # decode_split() doesn't close over anything model-specific, so its HF
+    # datasets cache fingerprint is the same for every model in MODELS — the
+    # first model to run pays for the raw-audio read, every later model for
+    # the same dataset hits the on-disk cache instead of re-decoding.
+    feature_extractor = load_feature_extractor(hf_model)
+    decoded_ds = decode_split(raw[base_split], label_col, all_labels, label2id, desc="Decoding")
+    full_ds = featurise_split(decoded_ds, feature_extractor, desc="Featurising")
 
     # ── Hyperparameter selection ───────────────────────────────────────────────
     # Priority:
     #   1. best_hyperparameters.json already on disk (from a prior HPO-only run)
-    #   2. Run Optuna HPO now (only on a single-GPU / non-DDP process)
+    #   2. Run Optuna HPO now, on a single held-out split — tuned once, not per
+    #      CV fold
     #   3. Fall back to the config defaults and persist them for reproducibility
     hpo_params_path = os.path.join(output_dir, "best_hyperparameters.json")
-    using_ddp = int(os.environ.get("WORLD_SIZE", 1)) > 1
     warmup = WARMUP_RATIO
     decay  = WEIGHT_DECAY
 
@@ -217,76 +140,85 @@ def run_experiment(
         batch_size = int(saved.get("per_device_train_batch_size", batch_size))
         warmup     = saved.get("warmup_ratio",                warmup)
         decay      = saved.get("weight_decay",                decay)
-        if main:
-            print(
-                f"  Loaded hyperparameters: lr={lr}  bs={batch_size}  "
-                f"warmup={warmup}  wd={decay}"
-            )
+        print(
+            f"  Loaded hyperparameters: lr={lr}  bs={batch_size}  "
+            f"warmup={warmup}  wd={decay}"
+        )
 
     elif hpo_trials > 0:
-        if using_ddp:
-            # HPO is not compatible with DDP — save defaults and warn
-            if main:
-                print(
-                    "  WARNING: HPO cannot run under DDP (WORLD_SIZE > 1). "
-                    "Run Stage 1 (--hpo_only) on a single GPU first."
-                )
-                _save_default_hparams(hpo_params_path, lr, batch_size, warmup, decay,
-                                      note="defaults — HPO skipped (DDP mode)")
-        elif main:
-            # Single-GPU HPO. Large training sets get a subsample and a
-            # shrunk trial/epoch budget — Stage 2 training still uses 100%
-            # of the data, only this search is cut down (see config.py).
-            hpo_train_ds = train_ds
-            n_trials     = hpo_trials
-            n_epochs     = HPO_EPOCHS
-            if len(train_ds) > HPO_LARGE_DATASET_THRESHOLD:
-                n_sub = int(len(train_ds) * HPO_SUBSAMPLE_FRAC)
-                hpo_train_ds = train_ds.shuffle(seed=seed).select(range(n_sub))
-                n_trials = min(hpo_trials, HPO_TRIALS_LARGE)
-                n_epochs = HPO_EPOCHS_LARGE
-                print(
-                    f"  Large dataset ({len(train_ds):,} train examples): "
-                    f"HPO on {n_sub:,} ({HPO_SUBSAMPLE_FRAC:.0%}), "
-                    f"{n_trials} trials x {n_epochs} epochs"
-                )
-            best = run_hpo(
-                hpo_train_ds, val_ds, hf_model, num_labels, id2label, label2id,
-                output_dir, n_trials=n_trials, epochs=n_epochs,
-            )
-            lr         = best["learning_rate"]
-            batch_size = int(best["per_device_train_batch_size"])
-            warmup     = best.get("warmup_ratio", warmup)
-            decay      = best.get("weight_decay",  decay)
+        hpo_train_idx, hpo_val_idx, _ = split_dataset(
+            raw, base_split, label_col, all_labels, seed, extra_stratify_col=extra_stratify_col
+        )
+        # Subsample large train splits (e.g. CAMEO) so Stage-1 search doesn't
+        # dominate the wall-clock budget.
+        hpo_train_ds = subsample_for_hpo(
+            full_ds.select(hpo_train_idx), HPO_SUBSAMPLE_THRESHOLD, HPO_SUBSAMPLE_FRACTION, seed
+        )
+        hpo_val_ds = full_ds.select(hpo_val_idx)
+        best = run_hpo(
+            hpo_train_ds, hpo_val_ds, hf_model, num_labels, id2label, label2id,
+            output_dir, n_trials=hpo_trials,
+        )
+        lr         = best["learning_rate"]
+        batch_size = int(best["per_device_train_batch_size"])
+        warmup     = best.get("warmup_ratio", warmup)
+        decay      = best.get("weight_decay",  decay)
 
     else:
-        if main:
-            _save_default_hparams(hpo_params_path, lr, batch_size, warmup, decay,
-                                  note="defaults — HPO disabled")
+        _save_default_hparams(hpo_params_path, lr, batch_size, warmup, decay,
+                              note="defaults — HPO disabled")
 
     # ── HPO-only mode: stop here after saving best_hyperparameters.json ───────
     if hpo_only:
-        if main:
-            print("  HPO complete. Skipping training (--hpo_only mode).")
+        print("  HPO complete. Skipping training (--hpo_only mode).")
         return {}
 
-    # ── Model + training ──────────────────────────────────────────────────────
-    model = load_model(hf_model, num_labels, id2label, label2id)
-    trainer = train_model(
-        train_ds, val_ds, model, output_dir,
-        lr=lr, batch_size=batch_size,
-        warmup_ratio=warmup, weight_decay=decay,
-        epochs=epochs,
-    )
+    # ── K-fold CV: train + evaluate a fresh model per fold ─────────────────────
+    fold_metrics = []
+    fold_lang_metrics = []
+    for fold_i, train_idx, val_idx, test_idx in kfold_split_dataset(
+        raw, base_split, label_col, all_labels, seed,
+        n_splits=k_folds, extra_stratify_col=extra_stratify_col,
+    ):
+        fold_dir = os.path.join(output_dir, f"fold_{fold_i}")
+        fold_metrics_path = os.path.join(fold_dir, "metrics.json")
 
-    # ── Evaluation ────────────────────────────────────────────────────────────
-    # run_inference is called from ALL ranks (DDP gather happens inside Trainer)
-    pred_output = run_inference(trainer, test_ds)
+        if skip_done and os.path.exists(fold_metrics_path):
+            print(f"  Fold {fold_i + 1}/{k_folds}: SKIP (metrics.json exists)")
+            with open(fold_metrics_path) as f:
+                fold_metrics.append(json.load(f))
+        else:
+            os.makedirs(fold_dir, exist_ok=True)
+            print(f"\n  --- Fold {fold_i + 1}/{k_folds} ---")
+
+            train_ds = full_ds.select(train_idx)
+            val_ds   = full_ds.select(val_idx)
+            test_ds  = full_ds.select(test_idx)
+            test_raw_fold = raw[base_split].select(test_idx)
+
+            model = load_model(hf_model, num_labels, id2label, label2id)
+            trainer = train_model(
+                train_ds, val_ds, model, fold_dir,
+                lr=lr, batch_size=batch_size,
+                warmup_ratio=warmup, weight_decay=decay,
+                epochs=epochs,
+            )
+
+            pred_output = run_inference(trainer, test_ds)
+
+            m = save_results(pred_output, test_raw_fold, id2label, num_labels, fold_dir)
+            save_training_curves(trainer, fold_dir)
+            fold_metrics.append(m)
+
+        lang_path = os.path.join(fold_dir, "metrics_by_language.json")
+        if os.path.exists(lang_path):
+            with open(lang_path) as f:
+                fold_lang_metrics.append(json.load(f))
 
     metrics = {}
-    if main:
-        metrics = save_results(pred_output, test_raw, id2label, num_labels, output_dir)
-        save_training_curves(trainer, output_dir)
+    if fold_metrics:
+        metrics = aggregate_cv_metrics(fold_metrics, output_dir)
+        aggregate_cv_language_metrics(fold_lang_metrics, output_dir)
 
     return metrics
 
@@ -306,14 +238,14 @@ def _save_default_hparams(path, lr, batch_size, warmup, decay, note=""):
 
 def main():
     parser = argparse.ArgumentParser(description="Run all model × dataset experiments.")
-    parser.add_argument("--output_dir",   default="outputs")
-    parser.add_argument("--epochs",       type=int,   default=NUM_EPOCHS)
-    parser.add_argument("--mfcc_epochs",  type=int,   default=50,
-                        help="Training epochs for the MFCC CNN baseline")
-    parser.add_argument("--batch_size",   type=int,   default=BATCH_SIZE)
-    parser.add_argument("--lr",           type=float, default=LEARNING_RATE)
-    parser.add_argument("--hpo_trials",   type=int,   default=HPO_TRIALS)
-    parser.add_argument("--seed",         type=int,   default=SEED)
+    parser.add_argument("--output_dir",  default="outputs")
+    parser.add_argument("--epochs",      type=int,   default=NUM_EPOCHS)
+    parser.add_argument("--batch_size",  type=int,   default=BATCH_SIZE)
+    parser.add_argument("--lr",          type=float, default=LEARNING_RATE)
+    parser.add_argument("--hpo_trials",  type=int,   default=HPO_TRIALS)
+    parser.add_argument("--k_folds",     type=int,   default=K_FOLDS,
+                         help="Number of stratified CV folds in Stage 2")
+    parser.add_argument("--seed",        type=int,   default=SEED)
     parser.add_argument(
         "--models", nargs="*", choices=list(MODELS.keys()), default=list(MODELS.keys()),
         help="Subset of models to run (default: all)",
@@ -324,36 +256,29 @@ def main():
     )
     parser.add_argument(
         "--skip_done", action="store_true",
-        help="Skip experiments that already have metrics.json",
+        help="Skip experiments with cv_metrics.json, and folds with fold_*/metrics.json, already done",
     )
     parser.add_argument(
         "--hpo_only", action="store_true",
         help="Stage 1: run Optuna HPO only, save best_hyperparameters.json, skip training",
     )
-    parser.add_argument(
-        "--include_mfcc", action="store_true",
-        help="Also run the MFCC + 1D CNN baseline for each dataset (CPU, no HPO)",
-    )
     args = parser.parse_args()
 
-    main_proc = _is_main()
-    n_gpus = torch.cuda.device_count()
     stage_label = "Stage 1 — HPO only" if args.hpo_only else "Stage 2 — Training"
 
-    if main_proc:
-        print("=" * 70)
-        print(f"Emotion Recognition Pipeline  [{stage_label}]")
-        print("=" * 70)
-        print(f"Device    : {'cuda' if torch.cuda.is_available() else 'cpu'}  ({n_gpus} GPU(s))")
-        print(f"Models    : {args.models}")
-        print(f"Datasets  : {args.datasets}")
-        if args.hpo_only:
-            print(f"HPO trials: {args.hpo_trials}  |  Seed: {args.seed}")
-        else:
-            print(f"Epochs    : {args.epochs}  |  Batch: {args.batch_size}  |  LR: {args.lr}")
-        print(f"Output    : {args.output_dir}")
-        print("=" * 70)
-        os.makedirs(args.output_dir, exist_ok=True)
+    print("=" * 70)
+    print(f"Emotion Recognition Pipeline  [{stage_label}]")
+    print("=" * 70)
+    print(f"Device    : {'cuda' if torch.cuda.is_available() else 'cpu'}")
+    print(f"Models    : {args.models}")
+    print(f"Datasets  : {args.datasets}")
+    if args.hpo_only:
+        print(f"HPO trials: {args.hpo_trials}  |  Seed: {args.seed}")
+    else:
+        print(f"Epochs    : {args.epochs}  |  Batch: {args.batch_size}  |  LR: {args.lr}  |  K-folds: {args.k_folds}")
+    print(f"Output    : {args.output_dir}")
+    print("=" * 70)
+    os.makedirs(args.output_dir, exist_ok=True)
 
     combos = [
         (mk, MODELS[mk], dk, DATASETS[dk])
@@ -366,29 +291,24 @@ def main():
         exp_name   = f"{model_key}_{dataset_key}"
         output_dir = os.path.join(args.output_dir, exp_name)
 
-        # Skip already-completed training experiments
-        metrics_path = os.path.join(output_dir, "metrics.json")
-        if args.skip_done and not args.hpo_only and os.path.exists(metrics_path):
-            if main_proc:
-                print(f"\n[{i}/{len(combos)}] SKIP {exp_name}  (metrics.json exists)")
-            with open(metrics_path) as f:
-                cached = json.load(f)
-            all_results.append({"model": model_key, "dataset": dataset_key, **cached})
+        # Skip already-completed (all folds done) training experiments
+        cv_metrics_path = os.path.join(output_dir, "cv_metrics.json")
+        if args.skip_done and not args.hpo_only and os.path.exists(cv_metrics_path):
+            print(f"\n[{i}/{len(combos)}] SKIP {exp_name}  (cv_metrics.json exists)")
+            all_results.append({"model": model_key, "dataset": dataset_key, **load_cv_metrics(output_dir)})
             continue
 
         # Skip HPO if best_hyperparameters.json already exists
         hpo_params_path = os.path.join(output_dir, "best_hyperparameters.json")
         if args.hpo_only and os.path.exists(hpo_params_path):
-            if main_proc:
-                print(f"\n[{i}/{len(combos)}] SKIP HPO for {exp_name}  (best_hyperparameters.json exists)")
+            print(f"\n[{i}/{len(combos)}] SKIP HPO for {exp_name}  (best_hyperparameters.json exists)")
             continue
 
-        if main_proc:
-            print(f"\n{'='*70}")
-            print(f"[{i}/{len(combos)}]  {exp_name}")
-            print(f"  Model  : {hf_model}")
-            print(f"  Dataset: {hf_dataset}")
-            print(f"  Output : {output_dir}")
+        print(f"\n{'='*70}")
+        print(f"[{i}/{len(combos)}]  {exp_name}")
+        print(f"  Model  : {hf_model}")
+        print(f"  Dataset: {hf_dataset}")
+        print(f"  Output : {output_dir}")
 
         try:
             metrics = run_experiment(
@@ -401,8 +321,10 @@ def main():
                 batch_size=args.batch_size,
                 epochs=args.epochs,
                 hpo_trials=args.hpo_trials,
+                k_folds=args.k_folds,
                 seed=args.seed,
                 hpo_only=args.hpo_only,
+                skip_done=args.skip_done,
             )
             if not args.hpo_only:
                 all_results.append({"model": model_key, "dataset": dataset_key, **metrics})
@@ -410,57 +332,17 @@ def main():
         except Exception:
             tb  = traceback.format_exc()
             err = tb.strip().splitlines()[-1]
-            if main_proc:
-                print(f"\nERROR in {exp_name}:\n{tb}")
+            print(f"\nERROR in {exp_name}:\n{tb}")
             if not args.hpo_only:
                 all_results.append({"model": model_key, "dataset": dataset_key, "error": err})
 
-    # ── MFCC baseline (CPU-only, no DDP, no HPO) ─────────────────────────────
-    if main_proc and args.include_mfcc and not args.hpo_only:
-        mfcc_datasets = args.datasets
-        print(f"\n{'='*70}")
-        print(f"MFCC + 1D CNN Baseline  (datasets: {mfcc_datasets})")
-        print(f"{'='*70}")
-
-        for dataset_key in mfcc_datasets:
-            exp_name   = f"mfcc-cnn_{dataset_key}"
-            output_dir = os.path.join(args.output_dir, exp_name)
-            metrics_path = os.path.join(output_dir, "metrics.json")
-
-            if args.skip_done and os.path.exists(metrics_path):
-                print(f"\nSKIP {exp_name}  (metrics.json exists)")
-                with open(metrics_path) as f:
-                    cached = json.load(f)
-                all_results.append({"model": "mfcc-cnn", "dataset": dataset_key, **cached})
-                continue
-
-            print(f"\n{'='*70}")
-            print(f"  {exp_name}")
-            print(f"  Output : {output_dir}")
-            os.makedirs(output_dir, exist_ok=True)
-
-            try:
-                metrics = run_mfcc_experiment(
-                    dataset_key=dataset_key,
-                    output_dir=output_dir,
-                    epochs=args.mfcc_epochs,
-                    seed=args.seed,
-                )
-                all_results.append({"model": "mfcc-cnn", "dataset": dataset_key, **metrics})
-            except Exception:
-                tb  = traceback.format_exc()
-                err = tb.strip().splitlines()[-1]
-                print(f"\nERROR in {exp_name}:\n{tb}")
-                all_results.append({"model": "mfcc-cnn", "dataset": dataset_key, "error": err})
-
-    if main_proc and all_results:
+    if all_results:
         generate_report(all_results, args.output_dir)
 
-    if main_proc:
-        if args.hpo_only:
-            print("\nStage 1 complete. Run Stage 2 to train with the selected hyperparameters.")
-        else:
-            print("\nAll experiments complete.")
+    if args.hpo_only:
+        print("\nStage 1 complete. Run Stage 2 to train with the selected hyperparameters.")
+    else:
+        print("\nAll experiments complete.")
 
 
 if __name__ == "__main__":
