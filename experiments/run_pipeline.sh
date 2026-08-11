@@ -29,7 +29,7 @@ echo "Model     : $MODEL"
 echo "Start time: $(date)"
 echo ""
 
-PROJECT_ROOT="/home/tu/tu_tu/tu_zxord71/asp-project"
+PROJECT_ROOT="/home/tu/tu_tu/tu_zxoqp65/work/asp-project"
 SCRIPT_DIR="$PROJECT_ROOT/experiments"
 OUTPUT_DIR="$PROJECT_ROOT/outputs"
 
