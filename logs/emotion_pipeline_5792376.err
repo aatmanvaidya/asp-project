@@ -1,8 +1,0 @@
-/var/spool/slurmd/job5792376/slurm_script: line 38: /home/tu/tu_tu/tu_zxoqp65/work/asp-project/.venv/bin/activate: No such file or directory
-Traceback (most recent call last):
-  File "/home/tu/tu_tu/tu_zxoqp65/work/asp-project/experiments/run_all.py", line 39, in <module>
-    import pipeline.audio_backend  # noqa: F401, E402  (side-effect import — must be first)
-    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/tu/tu_tu/tu_zxoqp65/work/asp-project/experiments/pipeline/audio_backend.py", line 12, in <module>
-    import numpy as np
-ModuleNotFoundError: No module named 'numpy'
