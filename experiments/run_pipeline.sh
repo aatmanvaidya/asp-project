@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=32
 #SBATCH --gres=gpu:4
 #SBATCH --mem=0
-#SBATCH --time=48:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --mail-type=END,FAIL
@@ -23,7 +23,7 @@ echo "Node      : $SLURM_NODELIST"
 echo "Start time: $(date)"
 echo ""
 
-PROJECT_ROOT="/home/tu/tu_tu/tu_zxord71/work/asp-project"
+PROJECT_ROOT="/home/tu/tu_tu/tu_zxord71/asp-project"
 SCRIPT_DIR="$PROJECT_ROOT/experiments"
 OUTPUT_DIR="$PROJECT_ROOT/outputs"
 
