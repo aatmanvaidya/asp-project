@@ -29,8 +29,10 @@ Additional flags:
     --hpo_only                     run HPO only, save best_hyperparameters.json, skip training
 """
 import argparse
+import glob
 import json
 import os
+import shutil
 import sys
 import traceback
 
@@ -209,6 +211,14 @@ def run_experiment(
             m = save_results(pred_output, test_raw_fold, id2label, num_labels, fold_dir)
             save_training_curves(trainer, fold_dir)
             fold_metrics.append(m)
+
+            # metrics/predictions/curves above are everything downstream code
+            # needs — the Trainer checkpoint (model + optimizer + scheduler
+            # state, kept via save_strategy="best") is dead weight once eval
+            # is done. Left alone it accumulates forever, one per fold, and
+            # for large models is the main driver of disk-quota exhaustion.
+            for ckpt_dir in glob.glob(os.path.join(fold_dir, "checkpoint-*")):
+                shutil.rmtree(ckpt_dir, ignore_errors=True)
 
         lang_path = os.path.join(fold_dir, "metrics_by_language.json")
         if os.path.exists(lang_path):
