@@ -2,18 +2,24 @@
 Emotion recognition pipeline — runs all model × dataset combinations.
 Single GPU throughout — no DDP/torchrun.
 
-Two-stage workflow (see run_pipeline.sh):
+Three-stage workflow (see experiments/submit_pipeline.sh and experiments/jobs/),
+chained per model via SLURM job dependencies so a failure in one stage/fold
+doesn't silently take out the rest of a model's run:
 
   Stage 1 — HPO (Optuna finds best hyperparameters per experiment, tuned once
     on a single held-out split — not re-tuned per CV fold):
     python experiments/run_all.py --hpo_trials 20 --hpo_only
 
-  Stage 2 — K_FOLDS-fold CV training (loads Stage-1 hyperparameters,
-    trains+evaluates K_FOLDS fresh models, and reports F1-macro etc. as
-    mean ± 95% CI across folds):
-    python experiments/run_all.py --skip_done
+  Stage 2 — one K_FOLDS-fold CV fold (loads Stage-1 hyperparameters, trains +
+    evaluates one fresh model for the given --fold). Submitted as a SLURM
+    array (one task per fold) so each fold can fail/retry independently:
+    python experiments/run_all.py --fold 0 --skip_done
 
-Single-GPU end-to-end (HPO + CV training in one go):
+  Stage 3 — aggregate all K_FOLDS completed folds into cv_metrics.json (mean
+    ± 95% CI) and the cross-model report, once every fold has finished:
+    python experiments/run_all.py --aggregate_only --skip_done
+
+Single-GPU end-to-end, all folds in one process (original, unsplit mode):
     python experiments/run_all.py --hpo_trials 20
 
 Additional flags:
@@ -23,6 +29,8 @@ Additional flags:
     --lr          3e-5
     --seed        42
     --k_folds     5                number of stratified CV folds in Stage 2
+    --fold        N                run only fold N of --k_folds (Stage 2 array jobs); default: all folds
+    --aggregate_only                Stage 3: skip training, aggregate existing fold_*/metrics.json
     --models      wav2vec2-base …  subset of models to run (default: all)
     --datasets    ravdess emodb    subset of datasets to run (default: all)
     --skip_done                    skip already-completed folds/experiments (cv_metrics.json / fold_*/metrics.json)
@@ -31,6 +39,7 @@ Additional flags:
 import argparse
 import json
 import os
+import shutil
 import sys
 import traceback
 
@@ -92,8 +101,47 @@ def run_experiment(
     seed: int       = SEED,
     hpo_only: bool  = False,
     skip_done: bool = False,
+    fold: int | None = None,
+    aggregate_only: bool = False,
 ) -> dict:
     os.makedirs(output_dir, exist_ok=True)
+
+    # ── Stage 3: aggregate-only mode ───────────────────────────────────────────
+    # Just reads the fold_*/metrics.json files every Stage-2 array task already
+    # wrote to disk — no data loading or model loading needed.
+    if aggregate_only:
+        fold_metrics = []
+        fold_lang_metrics = []
+        for fold_i in range(k_folds):
+            fold_dir = os.path.join(output_dir, f"fold_{fold_i}")
+            fold_metrics_path = os.path.join(fold_dir, "metrics.json")
+            if not os.path.exists(fold_metrics_path):
+                raise FileNotFoundError(
+                    f"--aggregate_only: {fold_metrics_path} missing — "
+                    f"fold {fold_i} hasn't completed yet"
+                )
+            with open(fold_metrics_path) as f:
+                fold_metrics.append(json.load(f))
+            lang_path = os.path.join(fold_dir, "metrics_by_language.json")
+            if os.path.exists(lang_path):
+                with open(lang_path) as f:
+                    fold_lang_metrics.append(json.load(f))
+
+        metrics = aggregate_cv_metrics(fold_metrics, output_dir)
+        aggregate_cv_language_metrics(fold_lang_metrics, output_dir)
+        return metrics
+
+    hpo_params_path = os.path.join(output_dir, "best_hyperparameters.json")
+    if fold is not None and hpo_trials > 0 and not os.path.exists(hpo_params_path):
+        # Stage 2 array tasks run one fold each as separate SLURM tasks; if
+        # hyperparameters aren't already on disk, every fold task would
+        # independently kick off its own redundant multi-trial Optuna search
+        # instead of sharing Stage 1's result. Fail fast, before paying for
+        # dataset loading/decoding, rather than partway through.
+        raise RuntimeError(
+            f"--fold {fold} requires {hpo_params_path} to already exist — "
+            "run the Stage 1 HPO job first (experiments/jobs/01_hpo.sbatch)"
+        )
 
     # ── Data ──────────────────────────────────────────────────────────────────
     raw, base_split, label_col, all_labels = load_dataset_hf(hf_dataset)
@@ -129,7 +177,6 @@ def run_experiment(
     #   2. Run Optuna HPO now, on a single held-out split — tuned once, not per
     #      CV fold
     #   3. Fall back to the config defaults and persist them for reproducibility
-    hpo_params_path = os.path.join(output_dir, "best_hyperparameters.json")
     warmup = WARMUP_RATIO
     decay  = WEIGHT_DECAY
 
@@ -180,6 +227,9 @@ def run_experiment(
         raw, base_split, label_col, all_labels, seed,
         n_splits=k_folds, extra_stratify_col=extra_stratify_col,
     ):
+        if fold is not None and fold_i != fold:
+            continue
+
         fold_dir = os.path.join(output_dir, f"fold_{fold_i}")
         fold_metrics_path = os.path.join(fold_dir, "metrics.json")
 
@@ -208,6 +258,7 @@ def run_experiment(
 
             m = save_results(pred_output, test_raw_fold, id2label, num_labels, fold_dir)
             save_training_curves(trainer, fold_dir)
+            _cleanup_fold_checkpoints(fold_dir)
             fold_metrics.append(m)
 
         lang_path = os.path.join(fold_dir, "metrics_by_language.json")
@@ -215,12 +266,34 @@ def run_experiment(
             with open(lang_path) as f:
                 fold_lang_metrics.append(json.load(f))
 
+    # Single-fold mode (Stage 2 array tasks): other folds are still running as
+    # separate SLURM tasks, so aggregation happens later in Stage 3
+    # (--aggregate_only), once every fold_*/metrics.json exists.
+    if fold is not None:
+        return {}
+
     metrics = {}
     if fold_metrics:
         metrics = aggregate_cv_metrics(fold_metrics, output_dir)
         aggregate_cv_language_metrics(fold_lang_metrics, output_dir)
 
     return metrics
+
+
+def _cleanup_fold_checkpoints(fold_dir: str) -> None:
+    """Delete the Trainer checkpoint dir(s) left in fold_dir after training.
+
+    save_strategy="best" + load_best_model_at_end=True only need the
+    checkpoint on disk transiently, to reload it during training — by the time
+    save_results()/save_training_curves() have persisted metrics/predictions/
+    plots, the checkpoint (full model weights + optimizer state, easily
+    several GB for the larger models) is dead weight. Left alone, it
+    accumulates across every model x dataset x fold combination sharing the
+    same HPC disk quota, which is what was exhausting it mid-run.
+    """
+    for name in os.listdir(fold_dir):
+        if name.startswith("checkpoint-"):
+            shutil.rmtree(os.path.join(fold_dir, name), ignore_errors=True)
 
 
 def _save_default_hparams(path, lr, batch_size, warmup, decay, note=""):
@@ -262,9 +335,27 @@ def main():
         "--hpo_only", action="store_true",
         help="Stage 1: run Optuna HPO only, save best_hyperparameters.json, skip training",
     )
+    parser.add_argument(
+        "--fold", type=int, default=None,
+        help="Stage 2: run only this single fold index (0-based) of --k_folds, "
+             "for SLURM array jobs. Skips aggregation — run --aggregate_only after all folds finish.",
+    )
+    parser.add_argument(
+        "--aggregate_only", action="store_true",
+        help="Stage 3: skip training; aggregate existing fold_*/metrics.json into "
+             "cv_metrics.json and the report. Run once all --fold jobs for a model have finished.",
+    )
     args = parser.parse_args()
 
-    stage_label = "Stage 1 — HPO only" if args.hpo_only else "Stage 2 — Training"
+    if args.fold is not None and args.aggregate_only:
+        parser.error("--fold and --aggregate_only are mutually exclusive")
+
+    stage_label = (
+        "Stage 1 — HPO only" if args.hpo_only else
+        "Stage 3 — Aggregate only" if args.aggregate_only else
+        f"Stage 2 — Training (fold {args.fold})" if args.fold is not None else
+        "Stage 2 — Training (all folds)"
+    )
 
     print("=" * 70)
     print(f"Emotion Recognition Pipeline  [{stage_label}]")
@@ -325,15 +416,19 @@ def main():
                 seed=args.seed,
                 hpo_only=args.hpo_only,
                 skip_done=args.skip_done,
+                fold=args.fold,
+                aggregate_only=args.aggregate_only,
             )
-            if not args.hpo_only:
+            # A single --fold run has no aggregate metrics yet (that's Stage 3's
+            # job) and isn't meaningful in the cross-model report.
+            if not args.hpo_only and args.fold is None:
                 all_results.append({"model": model_key, "dataset": dataset_key, **metrics})
 
         except Exception:
             tb  = traceback.format_exc()
             err = tb.strip().splitlines()[-1]
             print(f"\nERROR in {exp_name}:\n{tb}")
-            if not args.hpo_only:
+            if not args.hpo_only and args.fold is None:
                 all_results.append({"model": model_key, "dataset": dataset_key, "error": err})
 
     if all_results:
@@ -341,6 +436,8 @@ def main():
 
     if args.hpo_only:
         print("\nStage 1 complete. Run Stage 2 to train with the selected hyperparameters.")
+    elif args.fold is not None:
+        print(f"\nFold {args.fold} complete. Run Stage 3 (--aggregate_only) once every fold has finished.")
     else:
         print("\nAll experiments complete.")
 
