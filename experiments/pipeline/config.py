@@ -54,7 +54,7 @@ MODELS: dict[str, str] = {
 DATASETS: dict[str, str] = {
     "ravdess": "xbgoose/ravdess",
     "emodb":   "renumics/emodb",
-    "cameo":   "amu-cai/CAMEO",
+    # "cameo":   "amu-cai/CAMEO",
 }
 
 # Used when RAVDESS labels are integer-encoded and dataset lacks ClassLabel names

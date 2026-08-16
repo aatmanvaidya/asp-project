@@ -1,57 +1,57 @@
 {
   "anger": {
-    "precision": 0.9285714285714286,
-    "recall": 1.0,
-    "f1-score": 0.9629629629629629,
+    "precision": 1.0,
+    "recall": 0.9615384615384616,
+    "f1-score": 0.9803921568627451,
     "support": 26.0
   },
   "boredom": {
-    "precision": 0.8823529411764706,
-    "recall": 0.9375,
-    "f1-score": 0.9090909090909091,
+    "precision": 0.9411764705882353,
+    "recall": 1.0,
+    "f1-score": 0.9696969696969697,
     "support": 16.0
   },
   "disgust": {
     "precision": 1.0,
-    "recall": 0.7777777777777778,
-    "f1-score": 0.875,
+    "recall": 0.8888888888888888,
+    "f1-score": 0.9411764705882353,
     "support": 9.0
   },
   "fear": {
     "precision": 1.0,
-    "recall": 0.8571428571428571,
-    "f1-score": 0.9230769230769231,
+    "recall": 1.0,
+    "f1-score": 1.0,
     "support": 14.0
   },
   "happiness": {
-    "precision": 0.8125,
-    "recall": 0.8666666666666667,
-    "f1-score": 0.8387096774193549,
-    "support": 15.0
-  },
-  "neutral": {
     "precision": 0.8823529411764706,
     "recall": 1.0,
     "f1-score": 0.9375,
     "support": 15.0
   },
+  "neutral": {
+    "precision": 1.0,
+    "recall": 0.9333333333333333,
+    "f1-score": 0.9655172413793104,
+    "support": 15.0
+  },
   "sadness": {
     "precision": 1.0,
-    "recall": 0.8333333333333334,
-    "f1-score": 0.9090909090909091,
+    "recall": 1.0,
+    "f1-score": 1.0,
     "support": 12.0
   },
-  "accuracy": 0.9158878504672897,
+  "accuracy": 0.9719626168224299,
   "macro avg": {
-    "precision": 0.9293967587034813,
-    "recall": 0.8960600907029478,
-    "f1-score": 0.9079187688058656,
+    "precision": 0.9747899159663866,
+    "recall": 0.9691086691086692,
+    "f1-score": 0.970611834075323,
     "support": 107.0
   },
   "weighted avg": {
-    "precision": 0.9222738160684835,
-    "recall": 0.9158878504672897,
-    "f1-score": 0.9152598558499975,
+    "precision": 0.9747113798790544,
+    "recall": 0.9719626168224299,
+    "f1-score": 0.9721606957903425,
     "support": 107.0
   }
 }

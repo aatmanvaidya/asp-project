@@ -6,30 +6,24 @@
 #SBATCH --cpus-per-task=32
 #SBATCH --gres=gpu:1
 #SBATCH --mem=0
-#SBATCH --time=48:00:00
+#SBATCH --time=8:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=aatman-vrundavan.vaidya@student.uni-tuebingen.de
 
-# MODEL is passed in per submission, e.g.:
-#   sbatch --export=ALL,MODEL=wav2vec2-base experiments/run_pipeline.sh
-# Submit one such job per model to run them one at a time / independently.
-if [ -z "$MODEL" ]; then
-    echo "MODEL is not set. Submit with: sbatch --export=ALL,MODEL=<model_name> experiments/run_pipeline.sh"
-    exit 1
-fi
-
+# Single job, single A100 GPU, all models x datasets from config.py
+# (CAMEO disabled there). run_all.py handles HPO + CV training end-to-end
+# for every combo in one process — see its module docstring.
 echo "============================================"
 echo "Emotion Recognition Pipeline"
 echo "============================================"
 echo "Job ID    : $SLURM_JOB_ID"
 echo "Node      : $SLURM_NODELIST"
-echo "Model     : $MODEL"
 echo "Start time: $(date)"
 echo ""
 
-PROJECT_ROOT="/home/tu/tu_tu/tu_zxoqp65/work/asp-project"
+PROJECT_ROOT="/home/tu/tu_tu/tu_zxord71/asp-project"
 SCRIPT_DIR="$PROJECT_ROOT/experiments"
 OUTPUT_DIR="$PROJECT_ROOT/outputs"
 
@@ -69,88 +63,36 @@ echo "GPU info:"
 nvidia-smi --query-gpu=index,name,memory.total,memory.free --format=csv,noheader
 echo ""
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 1 — Optuna HPO (single GPU, this model only)
-#
-# Runs 10 Optuna trials × 3 epochs per experiment to find the best
-# learning rate, batch size, warmup ratio, and weight decay.
-# Saves best_hyperparameters.json for each model/dataset combination.
-# Adjust --hpo_trials to trade search quality against wall-clock time:
-#   20 trials ≈ good coverage | 10 trials ≈ faster | 5 trials ≈ quick sanity
-# ─────────────────────────────────────────────────────────────────────────────
 echo "============================================"
-echo "Stage 1: Optuna HPO ($MODEL, 1 GPU, 10 trials each)"
+echo "Running pipeline (1 GPU, HPO + CV training)"
 echo "============================================"
 echo ""
 
 CUDA_VISIBLE_DEVICES=0 uv run "$SCRIPT_DIR/run_all.py" \
     --output_dir "$OUTPUT_DIR" \
-    --models "$MODEL" \
     --hpo_trials 10 \
-    --hpo_only \
-    --seed 42
-
-STAGE1_EXIT=$?
-echo ""
-echo "Stage 1 exit code: $STAGE1_EXIT"
-
-if [ $STAGE1_EXIT -ne 0 ]; then
-    echo "Stage 1 (HPO) failed. Aborting."
-    exit $STAGE1_EXIT
-fi
-
-echo ""
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 2 — 5-fold CV training (single GPU, this model only)
-#
-# Loads the best_hyperparameters.json saved in Stage 1 (tuned once, not
-# re-tuned per fold) and, for each experiment, trains + evaluates 5 fresh
-# models via stratified K-fold CV, reporting F1-macro etc. as mean ± 95% CI
-# across folds. --skip_done lets you safely re-submit the job if it was
-# interrupted: completed folds (fold_*/metrics.json) and completed
-# experiments (cv_metrics.json) are both skipped automatically.
-# ─────────────────────────────────────────────────────────────────────────────
-echo "============================================"
-echo "Stage 2: 5-fold CV training ($MODEL, 1 GPU)"
-echo "============================================"
-echo ""
-
-CUDA_VISIBLE_DEVICES=0 uv run "$SCRIPT_DIR/run_all.py" \
-    --output_dir "$OUTPUT_DIR" \
-    --models "$MODEL" \
     --epochs 30 \
     --batch_size 32 \
     --k_folds 5 \
     --seed 42 \
     --skip_done
 
-STAGE2_EXIT=$?
+EXIT_CODE=$?
 
 echo ""
 echo "============================================"
 echo "Job finished"
 echo "============================================"
-echo "Stage 1 exit : $STAGE1_EXIT"
-echo "Stage 2 exit : $STAGE2_EXIT"
-echo "End time     : $(date)"
+echo "Exit code : $EXIT_CODE"
+echo "End time  : $(date)"
 echo ""
 
-if [ $STAGE2_EXIT -eq 0 ]; then
+if [ $EXIT_CODE -eq 0 ]; then
     echo "Success. Outputs:"
     ls -lh "$OUTPUT_DIR"
-    echo ""
-    if [ -f "$OUTPUT_DIR/report.md" ]; then
-        echo "=== report.md (partial — this job's model ($MODEL) only;"
-        echo "    every job overwrites this file, so it does NOT"
-        echo "    accumulate across jobs. Once ALL model jobs finish,"
-        echo "    run this once (no --models filter) to regenerate the"
-        echo "    full report from every completed cv_metrics.json:"
-        echo "      uv run \"$SCRIPT_DIR/run_all.py\" --output_dir \"$OUTPUT_DIR\" --skip_done"
-        echo "    ==="
-    fi
 else
-    echo "Failure: Stage 2 exited with code $STAGE2_EXIT"
-    echo "Check logs: logs/${SLURM_JOB_NAME}_${SLURM_JOB_ID}.err"
+    echo "Failure: exited with code $EXIT_CODE"
+    echo "Check logs/${SLURM_JOB_NAME}_${SLURM_JOB_ID}.err"
 fi
 
-exit $STAGE2_EXIT
+exit $EXIT_CODE

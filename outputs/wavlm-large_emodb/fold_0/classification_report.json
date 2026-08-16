@@ -1,38 +1,38 @@
 {
   "anger": {
     "precision": 1.0,
-    "recall": 0.9615384615384616,
-    "f1-score": 0.9803921568627451,
+    "recall": 1.0,
+    "f1-score": 1.0,
     "support": 26.0
   },
   "boredom": {
-    "precision": 0.9411764705882353,
+    "precision": 1.0,
     "recall": 1.0,
-    "f1-score": 0.9696969696969697,
+    "f1-score": 1.0,
     "support": 16.0
   },
   "disgust": {
     "precision": 1.0,
-    "recall": 0.8888888888888888,
-    "f1-score": 0.9411764705882353,
+    "recall": 1.0,
+    "f1-score": 1.0,
     "support": 9.0
   },
   "fear": {
-    "precision": 0.9333333333333333,
-    "recall": 1.0,
-    "f1-score": 0.9655172413793104,
+    "precision": 1.0,
+    "recall": 0.9285714285714286,
+    "f1-score": 0.9629629629629629,
     "support": 14.0
   },
   "happiness": {
-    "precision": 0.875,
-    "recall": 0.9333333333333333,
-    "f1-score": 0.9032258064516129,
+    "precision": 0.9375,
+    "recall": 1.0,
+    "f1-score": 0.967741935483871,
     "support": 15.0
   },
   "neutral": {
     "precision": 1.0,
-    "recall": 0.9333333333333333,
-    "f1-score": 0.9655172413793104,
+    "recall": 1.0,
+    "f1-score": 1.0,
     "support": 15.0
   },
   "sadness": {
@@ -41,17 +41,17 @@
     "f1-score": 1.0,
     "support": 12.0
   },
-  "accuracy": 0.9626168224299065,
+  "accuracy": 0.9906542056074766,
   "macro avg": {
-    "precision": 0.9642156862745098,
-    "recall": 0.9595848595848596,
-    "f1-score": 0.9607894123368835,
+    "precision": 0.9910714285714286,
+    "recall": 0.9897959183673469,
+    "f1-score": 0.9901006997781191,
     "support": 107.0
   },
   "weighted avg": {
-    "precision": 0.9649578522997985,
-    "recall": 0.9626168224299065,
-    "f1-score": 0.9628441394920672,
+    "precision": 0.9912383177570093,
+    "recall": 0.9906542056074766,
+    "f1-score": 0.9906318739601827,
     "support": 107.0
   }
 }

@@ -1,0 +1,63 @@
+{
+  "angry": {
+    "precision": 0.9705882352941176,
+    "recall": 0.8461538461538461,
+    "f1-score": 0.9041095890410958,
+    "support": 39.0
+  },
+  "calm": {
+    "precision": 0.8604651162790697,
+    "recall": 0.9736842105263158,
+    "f1-score": 0.9135802469135802,
+    "support": 38.0
+  },
+  "disgust": {
+    "precision": 0.9,
+    "recall": 0.9473684210526315,
+    "f1-score": 0.9230769230769231,
+    "support": 38.0
+  },
+  "fearful": {
+    "precision": 1.0,
+    "recall": 0.9473684210526315,
+    "f1-score": 0.972972972972973,
+    "support": 38.0
+  },
+  "happy": {
+    "precision": 0.875,
+    "recall": 0.8974358974358975,
+    "f1-score": 0.8860759493670886,
+    "support": 39.0
+  },
+  "neutral": {
+    "precision": 0.875,
+    "recall": 0.7368421052631579,
+    "f1-score": 0.8,
+    "support": 19.0
+  },
+  "sad": {
+    "precision": 0.8717948717948718,
+    "recall": 0.8717948717948718,
+    "f1-score": 0.8717948717948718,
+    "support": 39.0
+  },
+  "surprised": {
+    "precision": 0.9,
+    "recall": 0.9473684210526315,
+    "f1-score": 0.9230769230769231,
+    "support": 38.0
+  },
+  "accuracy": 0.90625,
+  "macro avg": {
+    "precision": 0.9066060279210073,
+    "recall": 0.8960020242914979,
+    "f1-score": 0.8993359345304319,
+    "support": 288.0
+  },
+  "weighted avg": {
+    "precision": 0.9086826930384557,
+    "recall": 0.90625,
+    "f1-score": 0.9057642517619944,
+    "support": 288.0
+  }
+}

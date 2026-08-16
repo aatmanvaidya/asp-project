@@ -22,7 +22,7 @@ index,audio_file,ground_truth,predicted,correct
 20,09a05Nb.wav,neutral,neutral,True
 21,09a05Tb.wav,sadness,sadness,True
 22,09a05Wc.wav,anger,anger,True
-23,09b02Wc.wav,anger,happiness,False
+23,09b02Wc.wav,anger,fear,False
 24,09b02Wd.wav,anger,anger,True
 25,09b03Ed.wav,disgust,disgust,True
 26,09b03Wb.wav,anger,anger,True
@@ -60,7 +60,7 @@ index,audio_file,ground_truth,predicted,correct
 58,13b10Fa.wav,happiness,happiness,True
 59,13b10Wc.wav,anger,anger,True
 60,14a02Ab.wav,fear,fear,True
-61,14a02La.wav,boredom,boredom,True
+61,14a02La.wav,boredom,neutral,False
 62,14a04Ed.wav,disgust,disgust,True
 63,14a05Ac.wav,fear,fear,True
 64,14a07Aa.wav,fear,fear,True
@@ -78,7 +78,7 @@ index,audio_file,ground_truth,predicted,correct
 76,14b10Lb.wav,boredom,boredom,True
 77,15a01Nb.wav,neutral,neutral,True
 78,15a01Wa.wav,anger,anger,True
-79,15a02Ta.wav,sadness,boredom,False
+79,15a02Ta.wav,sadness,sadness,True
 80,15a02Wd.wav,anger,anger,True
 81,15a04Nc.wav,neutral,neutral,True
 82,15a05Fb.wav,happiness,happiness,True
@@ -91,7 +91,7 @@ index,audio_file,ground_truth,predicted,correct
 89,15b02Wa.wav,anger,anger,True
 90,15b03Lc.wav,boredom,boredom,True
 91,15b03Wa.wav,anger,anger,True
-92,15b10Ac.wav,fear,happiness,False
+92,15b10Ac.wav,fear,fear,True
 93,16a01Tb.wav,sadness,sadness,True
 94,16a01Wb.wav,anger,anger,True
 95,16a02Tc.wav,sadness,sadness,True
